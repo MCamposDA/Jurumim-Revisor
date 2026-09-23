@@ -6,6 +6,7 @@ Modes:
   -st / -so         merge synonyms into a standard term
   --ws              literal search for words, phrases, hyphenated terms
   --articles        one folder per PMID with its own frequency table
+  --viewer          open the results in the Streamlit viewer
   --pubmed          download a query from NCBI in MEDLINE format
 
 Run with -h for the full syntax.
@@ -197,8 +198,10 @@ def contar_por_artigo(artigos):
     return cont_tiab, cont_ti, cont_ab, artigos_por_palavra
 
 
-COLUNAS = ['palavra', 'frequencia_tiab', 'frequencia_ti', 'frequencia_ab', 'art']
-COLUNAS_WS = ['termo', 'frequencia_tiab', 'frequencia_ti', 'frequencia_ab', 'artigos_com_termo']
+# Column names of the Excel outputs
+COLUNAS = ['word', 'tiab_frequency', 'ti_frequency', 'ab_frequency', 'articles']
+COLUNAS_WS = ['term', 'tiab_frequency', 'ti_frequency', 'ab_frequency', 'articles']
+COLUNAS_ARTIGO = ['word', 'tiab_frequency', 'ti_frequency', 'ab_frequency']
 
 
 def tabela_frequencia(artigos):
@@ -245,24 +248,24 @@ def agrupar_termos(itens):
 def aplicar_grupos(df, grupos, artigos_por_palavra):
     """
     Merge each group into one row named after the standard term.
-    Frequencies are summed; 'art' is the number of distinct articles containing
+    Frequencies are summed; 'articles' is the number of distinct articles containing
     any term of the group (set union), so an article is never counted twice.
     """
     for chave, sinonimos in grupos.items():
         relacionados = list(dict.fromkeys(lematizar(normalizar(t)) for t in [chave] + sinonimos))
-        subset = df[df['palavra'].isin(relacionados)]
+        subset = df[df['word'].isin(relacionados)]
         if subset.empty:
             print(f"Warning: no occurrence of group '{chave}'.")
             continue
         uniao = set().union(*(artigos_por_palavra.get(t, set()) for t in relacionados))
         linha = [chave,
-                 int(subset['frequencia_tiab'].sum()),
-                 int(subset['frequencia_ti'].sum()),
-                 int(subset['frequencia_ab'].sum()),
+                 int(subset['tiab_frequency'].sum()),
+                 int(subset['ti_frequency'].sum()),
+                 int(subset['ab_frequency'].sum()),
                  len(uniao)]
-        df = df[~df['palavra'].isin(relacionados)]
+        df = df[~df['word'].isin(relacionados)]
         df = pd.concat([df, pd.DataFrame([linha], columns=COLUNAS)])
-    return df.sort_values(by='frequencia_tiab', ascending=False).reset_index(drop=True)
+    return df.sort_values(by='tiab_frequency', ascending=False).reset_index(drop=True)
 
 
 # =====================================================
@@ -283,7 +286,7 @@ def contar_termos_ws(artigos, termos_por_rotulo):
     """
     Count every occurrence of each label's terms in the raw text (no stopword
     removal, no tokenization). For a group, counts are summed and
-    'artigos_com_termo' counts articles containing at least one of its terms.
+    'articles' counts articles containing at least one of its terms.
     """
     textos = [(ti.lower(), ab.lower()) for ti, ab in artigos]
     resultados = []
@@ -454,7 +457,7 @@ def modo_articles(entrada):
         cont_ti, cont_ab = Counter(tokens_ti), Counter(tokens_ab)
         dados = [[p, f, cont_ti.get(p, 0), cont_ab.get(p, 0)]
                  for p, f in Counter(tokens_ti + tokens_ab).most_common()]
-        df = pd.DataFrame(dados, columns=['palavra', 'frequencia_tiab', 'frequencia_ti', 'frequencia_ab'])
+        df = pd.DataFrame(dados, columns=COLUNAS_ARTIGO)
         df.to_excel(pasta / f"{pmid}.xlsx", index=False)
 
         with open(pasta / f"{pmid}_info.txt", 'w', encoding='utf-8') as f:
@@ -498,6 +501,46 @@ def modo_padrao(entrada, saida):
 
 
 # =====================================================
+# Viewer (--viewer)
+# =====================================================
+VIEWER_APP = Path(__file__).resolve().parent / 'viewer' / 'JR_Phleb.view.py'
+PMID_DIR = Path('PMID')
+
+
+def pmid_dir_completo(entrada):
+    """True when ./PMID already has a table for every PMID of the input file."""
+    texto = Path(entrada).read_text(encoding='utf-8', errors='ignore')
+    pmids = re.findall(r'^PMID- *(\S+)', texto, flags=re.M)
+    return bool(pmids) and all((PMID_DIR / p / f"{p}.xlsx").is_file() for p in pmids)
+
+
+def abrir_viewer(entrada, tabela):
+    """Start the Streamlit viewer on the input file, the general table and ./PMID."""
+    import importlib.util
+    import os
+    import subprocess
+
+    if not VIEWER_APP.is_file():
+        print(f"Viewer app not found: {VIEWER_APP}")
+        return 1
+    if importlib.util.find_spec('streamlit') is None:
+        print("Streamlit is not installed in this environment: pip install -r requirements.txt")
+        return 1
+
+    env = dict(os.environ,
+               VIEWER_PUBMED_FILE=str(Path(entrada).resolve()),
+               VIEWER_GENERAL_XLSX=str(Path(tabela).resolve()),
+               VIEWER_PMID_DIR=str(PMID_DIR.resolve()))
+    print("Starting viewer (Ctrl+C to stop)...", flush=True)
+    try:
+        # Same interpreter as this script, so this environment's Streamlit is used
+        return subprocess.run([sys.executable, '-m', 'streamlit', 'run', str(VIEWER_APP)],
+                              env=env).returncode
+    except KeyboardInterrupt:
+        return 0
+
+
+# =====================================================
 # CLI
 # =====================================================
 EXEMPLOS = """examples:
@@ -508,6 +551,7 @@ EXEMPLOS = """examples:
   python3 Jurumim_Revisor.py input.txt output.xlsx --ws "science park" covid-19 t-cell
   python3 Jurumim_Revisor.py input.txt output.xlsx --ws -st "sandfly" -so "phlebotomine"
   python3 Jurumim_Revisor.py input.txt --articles
+  python3 Jurumim_Revisor.py input.txt output.xlsx --viewer
   python3 Jurumim_Revisor.py -p -q "Nyssomyia" --email you@example.org
 
 Input and output files go first; flags that take several values
@@ -535,6 +579,8 @@ def criar_parser():
                         help='synonym added to the last -st')
     parser.add_argument('-art', '--articles', action='store_true',
                         help='write one folder per PMID into ./PMID')
+    parser.add_argument('-v', '--viewer', action='store_true',
+                        help='after writing output.xlsx, build ./PMID if needed and open the viewer')
     parser.add_argument('--lemma', action='store_true',
                         help='count noun lemmas (viruses -> virus); does not affect --ws')
     parser.add_argument('-p', '--pubmed', action='store_true', help='download a PubMed query')
@@ -581,12 +627,12 @@ def main(argv=None):
     except ValueError as e:
         parser.error(str(e))
 
-    if args.articles:
+    if args.articles and not args.viewer:
         modo_articles(args.entrada)
         return 0
 
     if not args.saida or not args.saida.lower().endswith('.xlsx'):
-        dica = ''
+        dica = ' (--viewer needs the general table as output)' if args.viewer else ''
         if args.ws and any(t.lower().endswith('.xlsx') for t in args.ws):
             dica = ' (it was read as a search term: put input and output before --ws)'
         parser.error(f'output file must end with .xlsx{dica}')
@@ -600,6 +646,13 @@ def main(argv=None):
             modo_padrao(args.entrada, args.saida)
     except ValueError as e:
         parser.error(str(e))
+
+    if args.viewer:
+        if args.articles or not pmid_dir_completo(args.entrada):
+            modo_articles(args.entrada)
+        else:
+            print(f"Reusing {PMID_DIR}/ (delete it to rebuild the per-article tables).")
+        return abrir_viewer(args.entrada, args.saida)
     return 0
 
 

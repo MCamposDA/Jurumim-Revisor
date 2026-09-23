@@ -26,11 +26,8 @@ python3 Jurumim_Revisor.py -p -q "Nyssomyia" --email you@example.org
 # 2. Word frequency table
 python3 Jurumim_Revisor.py Pubmed_Nyssomyia.txt general.xlsx
 
-# 3. One table per article (used by the viewer)
-python3 Jurumim_Revisor.py Pubmed_Nyssomyia.txt --articles
-
-# 4. Open the viewer
-python3 viewer/run_JR_Phleb.view.py --pubmed Pubmed_Nyssomyia.txt --general general.xlsx --pmid PMID
+# 3. Or do everything at once: table + per-article tables + viewer in the browser
+python3 Jurumim_Revisor.py Pubmed_Nyssomyia.txt general.xlsx --viewer
 ```
 
 NLTK data (`punkt`, `punkt_tab`, `stopwords`, and `wordnet` for `--lemma`) is downloaded automatically on first use.
@@ -67,6 +64,7 @@ Put the input and output files **first**. `--ws` and `-sw` take several values a
 | Word search | `input.txt out.xlsx --ws "science park" covid-19 t-cell` | one row per searched term |
 | Word search, grouped | `input.txt out.xlsx --ws -st sandfly -so phlebotomine` | one row per group (loose terms and groups can be mixed) |
 | Per article | `input.txt --articles` | `PMID/<pmid>/<pmid>.xlsx` and `<pmid>_info.txt` |
+| Viewer | `input.txt out.xlsx --viewer` (combines with any table mode) | writes `out.xlsx`, builds `PMID/` if needed, opens the viewer |
 | PubMed download | `-p -q "QUERY" --email you@example.org [--apikey KEY]` | `Pubmed_<query>.txt` |
 
 ### Options
@@ -78,6 +76,7 @@ Put the input and output files **first**. `--ws` and `-sw` take several values a
 | `-so SYNONYM` | Adds a synonym to the last `-st`. |
 | `--ws`, `--wordsearch TERM ...` | Literal search (see *How counting works*). |
 | `-art`, `--articles` | Writes one folder per PMID into `./PMID`. |
+| `-v`, `--viewer` | After writing the output table, opens the Streamlit viewer (see *Viewer*). |
 | `--lemma` | Counts noun lemmas (`viruses` → `virus`, `mice` → `mouse`). Off by default. Does not affect `--ws`. |
 | `-p`, `--pubmed` | Downloads a query; requires `-q/--query` and `--email`. |
 | `--apikey KEY` | NCBI API key. Optional; raises the request rate from 3 to 10 per second. |
@@ -86,11 +85,13 @@ Put the input and output files **first**. `--ws` and `-sw` take several values a
 
 | Column | Meaning |
 |---|---|
-| `palavra` / `termo` | Word, group name or searched term |
-| `frequencia_tiab` | Occurrences in title + abstract |
-| `frequencia_ti` | Occurrences in the title |
-| `frequencia_ab` | Occurrences in the abstract |
-| `art` / `artigos_com_termo` | Number of **distinct** articles containing the word (for a group: at least one of its terms) |
+| `word` / `term` | Word or group name (`term` for `--ws` tables: searched term or group name) |
+| `tiab_frequency` | Occurrences in title + abstract |
+| `ti_frequency` | Occurrences in the title |
+| `ab_frequency` | Occurrences in the abstract |
+| `articles` | Number of **distinct** articles containing the word (for a group: at least one of its terms) |
+
+The per-article tables in `PMID/` have the same columns except `articles`.
 
 ---
 
@@ -125,8 +126,17 @@ Put the input and output files **first**. `--ws` and `-sw` take several values a
 ## Viewer
 
 ```bash
-python3 viewer/run_JR_Phleb.view.py --pubmed FILE.txt --general TABLE.xlsx --pmid PMID/
+python3 Jurumim_Revisor.py input.txt output.xlsx --viewer
 ```
+
+What `--viewer` does:
+1. It runs the requested analysis and writes `output.xlsx`. Any table mode works: plain, `-st/-so`, `--ws`, `-sw`, `--lemma`.
+2. It builds `PMID/` (the same output as `--articles`) unless that folder already has a table for every PMID of the input file.
+   - Add `--articles` to force a rebuild, for example after changing `-sw` or `--lemma`.
+   - Or delete the folder.
+3. It opens the app in the browser. Stop it with Ctrl+C.
+
+Tables written by older versions, with Portuguese column names, are still read.
 
 | Tab | Content |
 |---|---|
@@ -157,9 +167,8 @@ python3 viewer/run_JR_Phleb.view.py --pubmed FILE.txt --general TABLE.xlsx --pmi
 
 | Path | Purpose |
 |---|---|
-| `Jurumim_Revisor.py` | Core: parsing, counting, PubMed download (CLI) |
-| `viewer/run_JR_Phleb.view.py` | Viewer launcher |
-| `viewer/JR_Phleb.view.py` | Streamlit app |
+| `Jurumim_Revisor.py` | Everything you run: parsing, counting, PubMed download, `--viewer` |
+| `viewer/JR_Phleb.view.py` | Streamlit app (started by `--viewer`) |
 | `viewer/analysis/` | MEDLINE parser, author index, country inference, table loading |
 | `viewer/assets/` | Logos |
 | `requirements.txt` | Python dependencies |

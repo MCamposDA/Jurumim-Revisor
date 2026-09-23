@@ -5,20 +5,19 @@ import streamlit as st
 import pandas as pd
 
 # =====================================================
-# Input files (set by run_JR_Phleb.view.py)
+# Input files (set by Jurumim_Revisor.py --viewer)
 # =====================================================
 
 PUBMED_FILE = os.getenv("VIEWER_PUBMED_FILE")
 GENERAL_XLSX = os.getenv("VIEWER_GENERAL_XLSX")
 PMID_DIR = os.getenv("VIEWER_PMID_DIR")
 COLUMN_TRANSLATION = {
-    "palavra": "Word",
-    "frequencia_ti": "Title Frequency",
-    "frequencia_ab": "Abstract Frequency",
-    "frequencia_tiab": "Title & Abstract Frequency",
-    "art": "Articles",
-    "termo": "Term",
-    "artigos_com_termo": "Articles"
+    "word": "Word",
+    "term": "Term",
+    "ti_frequency": "Title Frequency",
+    "ab_frequency": "Abstract Frequency",
+    "tiab_frequency": "Title & Abstract Frequency",
+    "articles": "Articles"
 }
 
 AUTHOR_COLUMN_TRANSLATION = {
@@ -41,7 +40,7 @@ LABEL_TRANSLATION = {
 
 if not PUBMED_FILE or not GENERAL_XLSX or not PMID_DIR:
     st.error("Viewer started without input files.")
-    st.info("Start it with: python3 run_JR_Phleb.view.py --pubmed FILE.txt --general TABLE.xlsx --pmid PMID/")
+    st.info("Start it with: python3 Jurumim_Revisor.py input.txt output.xlsx --viewer")
     st.stop()
 
 PUBMED_FILE = Path(PUBMED_FILE)

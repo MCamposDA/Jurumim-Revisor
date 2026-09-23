@@ -1,6 +1,17 @@
 import pandas as pd
 from pathlib import Path
 
+# Tables written by older versions used Portuguese column names
+LEGACY_COLUMNS = {
+    "palavra": "word",
+    "termo": "term",
+    "frequencia_tiab": "tiab_frequency",
+    "frequencia_ti": "ti_frequency",
+    "frequencia_ab": "ab_frequency",
+    "art": "articles",
+    "artigos_com_termo": "articles",
+}
+
 # =====================================================
 # General table
 # =====================================================
@@ -11,9 +22,10 @@ def load_global_frequency_table(path):
     keep_default_na=False keeps words such as "na" and "nan" as text.
     """
     df = pd.read_excel(path, keep_default_na=False, na_values=[])
+    df = df.rename(columns=LEGACY_COLUMNS)
 
     df = df.sort_values(
-        by="frequencia_tiab",
+        by="tiab_frequency",
         ascending=False
     ).reset_index(drop=True)
 
@@ -34,9 +46,10 @@ def load_article_frequency_table(base_dir, pmid):
         raise FileNotFoundError(f"No table for PMID {pmid}")
 
     df = pd.read_excel(file_path, keep_default_na=False, na_values=[])
+    df = df.rename(columns=LEGACY_COLUMNS)
 
     df = df.sort_values(
-        by="frequencia_tiab",
+        by="tiab_frequency",
         ascending=False
     ).reset_index(drop=True)
 
@@ -58,7 +71,7 @@ def filter_words(df, min_freq=1):
     """
     Rows with TI+AB count >= min_freq.
     """
-    return df[df["frequencia_tiab"] >= min_freq]
+    return df[df["tiab_frequency"] >= min_freq]
 
 
 # =====================================================
@@ -71,8 +84,8 @@ def frequency_summary(df):
     """
     return {
         "total_palavras": len(df),
-        "soma_tiab": int(df["frequencia_tiab"].sum()),
-        "soma_ti": int(df["frequencia_ti"].sum()),
-        "soma_ab": int(df["frequencia_ab"].sum())
+        "soma_tiab": int(df["tiab_frequency"].sum()),
+        "soma_ti": int(df["ti_frequency"].sum()),
+        "soma_ab": int(df["ab_frequency"].sum())
     }
 
