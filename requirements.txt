@@ -1,5 +1,22 @@
+# Jurumim Revisor - pip install -r requirements.txt
+# Python 3.9 or newer, except 3.9.7 (Streamlit, used by the viewer, does not run on it).
+
+# Word counting and Excel tables
 nltk>=3.8
 pandas>=1.3
 openpyxl>=3.0
+
+# PubMed downloads (-p) and abstracts filled from PubMed (--fill-abstracts)
 biopython>=1.79
+
+# Viewer (--viewer)
 streamlit>=1.30
+
+# Desktop app (initialize.py): the logo
+pillow>=9.0
+
+# Not installed by pip:
+# - Tkinter, for the desktop app. It comes with Python on Windows and macOS.
+#   Ubuntu/Debian: sudo apt install python3-tk
+#   conda on Linux: conda install -c conda-forge "tk=*=xft_*"
+#   (the default conda tk has no font support and shows a single bitmap font)

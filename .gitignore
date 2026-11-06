@@ -8,6 +8,10 @@ venv/
 *.xlsx
 PMID/
 Pubmed_*.txt
+WOS_*.txt
+Scopus_*.txt
+Merged_*.txt
+results/
 
 # Unused high-resolution logo (the viewer uses jurumim_logo.jpg)
 viewer/assets/jurumim_logo.png
