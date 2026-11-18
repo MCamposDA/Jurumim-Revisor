@@ -497,7 +497,7 @@ def gravar_sem_resumo(sem_ab, destino):
     return arquivo
 
 
-def combinar(grupos, destino, args=None):
+def combinar(grupos, destino, args=None, origens=None):
     """
     Merge [(label, records), ...] into one MEDLINE file without duplicates.
     Groups are given in priority order (PubMed first). Also writes
@@ -509,12 +509,19 @@ def combinar(grupos, destino, args=None):
     <destino>_no_abstract.txt instead of <destino>, and are pre-marked in the
     PRISMA table as excluded, reason "No abstract available"
     (--keep-no-abstract keeps them in <destino>, counted by title).
+
+    origens describes each group for the search log (<destino>_search_log.json);
+    without it, each group is taken as an exported file.
     """
     from databases.dedup import remover_duplicatas
+    from databases.registro import escrever_log, origem_arquivo
     from databases.medline import escrever_medline, garantir_ids_unicos
     from databases.prisma import escrever_prisma
 
     todos = [r for _, regs in grupos for r in regs]
+    # Sources are described before duplicates are removed: a kept record gains the
+    # databases of its duplicates, and would then look like a merged file
+    origens = origens or [origem_arquivo(rotulo, regs) for rotulo, regs in grupos]
     # Duplicates first (a kept record without abstract takes its duplicate's),
     # then --fill-abstracts for the unique records still without one
     mantidos, relatorio = remover_duplicatas(todos)
@@ -532,6 +539,7 @@ def combinar(grupos, destino, args=None):
 
     rel = Path(destino).with_name(Path(destino).stem + '_prisma.xlsx')
     escrever_prisma(grupos, mantidos, relatorio, rel, resumos, sem_resumo=sem_ab)
+    log = escrever_log(destino, origens, relatorio, mantidos, sem_ab, resumos, herdados, manter_todos)
 
     print("\nRecords identified:")
     for rotulo, regs in grupos:
@@ -550,7 +558,7 @@ def combinar(grupos, destino, args=None):
         if not com_ab:
             print(f"Warning: no record has an abstract, so {destino} is empty; "
                   f"use --fill-abstracts or --keep-no-abstract.")
-    print(f"Saved: {destino} ({len(com_ab)} records with abstract)\nPRISMA table: {rel}")
+    print(f"Saved: {destino} ({len(com_ab)} records with abstract)\nPRISMA table: {rel}\nSearch log: {log}")
     return destino
 
 
@@ -561,6 +569,9 @@ def baixar_varias(dbs, query, args):
     A database that fails is reported and the others still run.
     """
     from databases.medline import escrever_medline, ler_medline
+    from databases.registro import origem_api
+    from databases.scopus import query_scopus
+    from databases.wos import query_wos
 
     def pubmed():
         fname = baixar_pubmed(query, args.email, args.apikey)
@@ -578,7 +589,15 @@ def baixar_varias(dbs, query, args):
 
     etapas = [('pubmed', 'PubMed', pubmed, None), ('wos', 'Web of Science', wos, 'WOS_'),
               ('scopus', 'Scopus', scopus, 'Scopus_')]
-    grupos, falhas = [], []
+    # what each database was sent, for the search log
+    enviado = {
+        'pubmed': (query, None),
+        'wos': (query_wos(args.wos_query or query, avisar=False), f"{args.wos_api} API"),
+        'scopus': (query_scopus(args.scopus_query or query, avisar=False),
+                   f"{args.scopus_key} key" + (f", {args.scopus_view} view" if args.scopus_key == 'institutional'
+                                               else '')),
+    }
+    grupos, falhas, origens = [], [], []
     for db, rotulo, baixar, prefixo in etapas:
         if db not in dbs:
             continue
@@ -588,17 +607,18 @@ def baixar_varias(dbs, query, args):
             print(f"{rotulo} failed: {e}\n  Going on with the other databases.")
             falhas.append(rotulo)
             continue
+        nome = nome_arquivo_query(query).replace('Pubmed_', prefixo or 'Pubmed_', 1)
         if regs and prefixo:
-            nome = nome_arquivo_query(query).replace('Pubmed_', prefixo, 1)
             escrever_medline(regs, nome)
             print(f"Saved: {nome} ({len(regs)} records, MEDLINE format)")
         grupos.append((rotulo, regs))
+        origens.append(origem_api(rotulo, enviado[db][0], enviado[db][1], regs, nome if regs else None))
 
     if not any(regs for _, regs in grupos):
         print("Nothing found in any database." if not falhas else
               f"No records: {', '.join(falhas)} failed.")
         return 1
-    combinar(grupos, nome_arquivo_query(query).replace('Pubmed_', 'Merged_', 1), args)
+    combinar(grupos, nome_arquivo_query(query).replace('Pubmed_', 'Merged_', 1), args, origens)
     if falhas:
         print(f"\nWarning: merged WITHOUT {', '.join(falhas)} (failed above). Fix the problem and "
               f"run again, or add that database later with --merge.")
@@ -656,6 +676,10 @@ def modo_screen(entrada, planilha, manter, destino):
 
     Records without abstract live in <entrada>_no_abstract.txt, pre-marked
     exclude in the table; one changed to include there is brought back.
+
+    'unmarked' in `manter` also keeps the records whose decision is empty (for
+    large searches screened by exclusion: mark only what goes out). Values that
+    are not a decision ('excl') are never kept.
     """
     try:
         df = pd.read_excel(planilha, sheet_name='records', dtype=str, keep_default_na=False)
@@ -697,7 +721,7 @@ def modo_screen(entrada, planilha, manter, destino):
     sem_ab_mantidos = 0
     for i, (bloco, id_) in enumerate(zip(blocos, id_do_bloco)):
         d = decisao_por_id.get(id_, '')
-        d = d if d in DECISOES else 'not screened'
+        d = d if d in DECISOES else ('unmarked' if not d else 'not screened')
         contagem[d] += 1
         if d in manter:
             mantidos.append(bloco.rstrip('\n'))
@@ -708,10 +732,15 @@ def modo_screen(entrada, planilha, manter, destino):
     if sem_ab_mantidos:
         print(f"Note: {sem_ab_mantidos} record(s) without abstract were marked {' / '.join(manter)} "
               f"in the table; they are kept and counted by title only.")
-    for d in DECISOES + ('not screened',):
-        print(f"  {d}: {contagem[d]}")
-    if contagem['not screened']:
-        print(f"Warning: {contagem['not screened']} records have no decision and were left out.")
+    for d in DECISOES + ('unmarked', 'not screened'):
+        if d != 'not screened' or contagem[d]:
+            print(f"  {d}: {contagem[d]}")
+    if contagem['unmarked'] and 'unmarked' not in manter:
+        print(f"Warning: {contagem['unmarked']} records have no decision and were left out "
+              f"(--keep ... unmarked keeps them).")
+    elif contagem['unmarked']:
+        print(f"Note: {contagem['unmarked']} records without a decision were kept (unmarked); the PRISMA "
+              f"table still counts them as not yet screened.")
     if not mantidos:
         print(f"No record marked {' / '.join(manter)}; nothing written.")
         return 1
@@ -963,14 +992,46 @@ def criar_parser():
                         help='output of --merge (default: Merged_records.txt)')
     parser.add_argument('--screen', nargs=2, metavar=('MERGED.txt', 'PRISMA.xlsx'),
                         help='keep only the records screened in the PRISMA table (see --keep)')
-    parser.add_argument('--keep', nargs='+', choices=list(DECISOES), default=['include'],
-                        help='screening decisions kept by --screen (default: include)')
+    parser.add_argument('--keep', nargs='+', choices=list(DECISOES) + ['unmarked'], default=['include'],
+                        help='screening decisions kept by --screen (default: include); unmarked = records with no decision')
     parser.add_argument('--screen-out', metavar='OUT.txt',
                         help='output of --screen (default: <MERGED>_screened.txt)')
     parser.add_argument('--fill-abstracts', nargs='?', const=True, default=None, metavar='FILE',
                         help='fill missing abstracts from PubMed (PMID), Crossref, Semantic Scholar '
                              'and OpenAlex (DOI), English only. Alone with a FILE: writes '
                              '<FILE>_filled.txt; with --merge or -p --db: fills the merged file')
+    parser.add_argument('--report', action='store_true',
+                        help='after the tables, write <input>_report/: co-occurrence network (HTML, '
+                             'tables, GraphML), trends per year, PRISMA 2020 flow diagram, methods text')
+    parser.add_argument('--report-pt', action='store_true',
+                        help='with --report: also write the methods text in Portuguese')
+    parser.add_argument('--context', action='store_true',
+                        help='write <input>_report/context/: overview, records, abstracts, network, trends '
+                             'and a suggestions template, for a language model to read (implies --report)')
+    parser.add_argument('--net-min', type=int, default=3, metavar='N',
+                        help='network: minimum times two words appear side by side (default: 3)')
+    parser.add_argument('--net-max-nodes', type=int, default=300, metavar='N',
+                        help='network: keep the N most frequent linked words (default: 300)')
+    parser.add_argument('--net-keep-generic', action='store_true',
+                        help='network: keep generic words of scientific writing (study, results, using...)')
+    parser.add_argument('--suggest', nargs=2, metavar=('MERGED.txt', 'PRISMA.xlsx'),
+                        help='screening suggestions from default criteria (document type, abstract, '
+                             'language) plus your own, written to rules_* columns of the PRISMA table')
+    parser.add_argument('--criteria', metavar='FILE',
+                        help='with --suggest: criteria file (write an empty one with --criteria-template)')
+    parser.add_argument('--include-terms', nargs='+', metavar='TERM',
+                        help='with --suggest: at least one of these terms in title/abstract, else exclude')
+    parser.add_argument('--exclude-terms', nargs='+', metavar='TERM',
+                        help='with --suggest: any of these terms in title/abstract gives exclude')
+    parser.add_argument('--years', metavar='FROM-TO',
+                        help='with --suggest: publication years kept, e.g. 2000-2026, 2000- or -2026')
+    parser.add_argument('--criteria-template', nargs='?', const='screening_criteria.txt', metavar='FILE',
+                        help='write an empty criteria file to fill in (default: screening_criteria.txt)')
+    parser.add_argument('--import-suggestions', nargs=2, metavar=('SUGGESTIONS.csv', 'PRISMA.xlsx'),
+                        help='copy screening suggestions of a language model (CSV: record_id, suggestion, '
+                             'reason, evidence, model) to ai_* columns of the PRISMA table')
+    parser.add_argument('--ai-model', metavar='NAME',
+                        help='with --import-suggestions: model name, when the CSV has no model column')
     parser.add_argument('--outdir', metavar='DIR',
                         help='write every output of this run into DIR (created if needed), e.g. '
                              'one folder per topic: --outdir results/Nyssomyia. Input files are '
@@ -990,9 +1051,76 @@ def criar_parser():
                              'give them with flags or environment variables')
     parser.add_argument('--show-keys', action='store_true',
                         help='show the saved e-mail / API keys (masked) and exit')
+    parser.add_argument('--set-keys', nargs='*', choices=['pubmed', 'wos', 'scopus', 'all'], metavar='DB',
+                        help='type and save the e-mail / API keys of these databases (default: all) '
+                             'without running a search')
     parser.add_argument('--forget-keys', action='store_true',
                         help='delete the saved e-mail / API keys and exit')
     return parser
+
+
+def _sem_saida(funcao, *args):
+    """Run a function whose messages were already printed once."""
+    import contextlib
+    import io
+    with contextlib.redirect_stdout(io.StringIO()):
+        return funcao(*args)
+
+
+def gerar_relatorio(args, grupos):
+    """--report / --context: network, trends, PRISMA diagram, methods text, context (see reporting/)."""
+    from reporting.relatorio import gerar
+    opcoes = {'minimo': max(1, args.net_min), 'max_nos': max(2, args.net_max_nodes),
+              'manter_genericas': args.net_keep_generic, 'portugues': args.report_pt,
+              'lemma': args.lemma, 'extra_stopwords': len(_sem_saida(carregar_stopwords, args.stopword)),
+              'ws': args.ws, 'grupos': grupos, 'contexto': args.context}
+    ferramentas = {'normalizar': normalizar, 'lematizar': lematizar, 'stop': stop_words,
+                   'compilar_termo': compilar_termo}
+    return gerar(args.entrada, args.saida, opcoes, ferramentas)
+
+
+def modo_sugerir(args):
+    """--suggest: rule-based screening suggestions (see databases/sugestoes.py)."""
+    from databases.sugestoes import ler_criterios, sugerir
+    mesclado, planilha = args.suggest
+    criterios = ler_criterios(args.criteria, args.include_terms, args.exclude_terms, args.years)
+    contagem, gravados, fora = sugerir(mesclado, planilha, criterios, compilar_termo, normalizar)
+    proprios = [f"{k}: {', '.join(v)}" for k, v in criterios.items() if v and k != 'years']
+    if criterios['years']:
+        proprios.append(f"years: {criterios['years'][0] or ''}-{criterios['years'][1] or ''}")
+    print("Criteria: default (no abstract, erratum/retraction/editorial/letter/comment/news... -> exclude; "
+          "review, meta-analysis, language other than English -> maybe)")
+    for c in proprios:
+        print(f"  + {c}")
+    print(f"Suggestions for {gravados} records of {Path(planilha).name} (columns rules_suggestion, "
+          f"rules_reason, rules_score):")
+    for d in ('include', 'exclude', 'maybe'):
+        print(f"  {d}: {contagem[d]}")
+    print(f"  no suggestion: {contagem['']}")
+    if fora:
+        print(f"Warning: {len(fora)} records of {Path(mesclado).name} are not in the table "
+              f"(e.g. {', '.join(fora[:3])}): is it the table of another merge?")
+    print("screening_decision was not changed: the decisions are yours.")
+    return 0
+
+
+def modo_importar_ia(args):
+    """--import-suggestions: a language model's suggestions CSV -> ai_* columns."""
+    from databases.sugestoes import importar_ia
+    csv_arq, planilha = args.import_suggestions
+    contagem, gravados, fora, problemas = importar_ia(csv_arq, planilha, args.ai_model)
+    print(f"AI suggestions for {gravados} records of {Path(planilha).name} (columns ai_suggestion, "
+          f"ai_reason, ai_evidence, ai_model):")
+    for d in ('include', 'exclude', 'maybe'):
+        print(f"  {d}: {contagem[d]}")
+    for p in problemas[:10]:
+        print(f"  skipped, {p}")
+    if len(problemas) > 10:
+        print(f"  ... and {len(problemas) - 10} more lines skipped")
+    if fora:
+        print(f"Warning: {len(fora)} record_id of the CSV are not in the table (e.g. {', '.join(fora[:3])}).")
+    print("screening_decision was not changed: the decisions are yours.")
+    return 0
 
 
 def preparar_outdir(args):
@@ -1022,6 +1150,11 @@ def preparar_outdir(args):
         args.merge = [achar(a) for a in args.merge]
     if args.screen:
         args.screen = [achar(a) for a in args.screen]
+    for nome in ('suggest', 'import_suggestions'):
+        if getattr(args, nome):
+            setattr(args, nome, [achar(a) for a in getattr(args, nome)])
+    if args.criteria:
+        args.criteria = achar(args.criteria)
     if isinstance(args.fill_abstracts, str):
         args.fill_abstracts = achar(args.fill_abstracts)
     if args.stopword:
@@ -1040,6 +1173,11 @@ def main(argv=None):
         from databases import credenciais
         credenciais.mostrar() if args.show_keys else credenciais.esquecer()
         return 0
+    if args.set_keys is not None:
+        from databases import credenciais
+        dbs = ['pubmed', 'wos', 'scopus'] if not args.set_keys or 'all' in args.set_keys \
+            else list(dict.fromkeys(args.set_keys))
+        return credenciais.definir(dbs)
 
     arquivo_para_preencher = args.fill_abstracts if isinstance(args.fill_abstracts, str) else None
     if arquivo_para_preencher and (args.merge or args.pubmed):
@@ -1071,6 +1209,30 @@ def main(argv=None):
             modo_preencher(arquivo_para_preencher, destino, args)
         except ValueError as e:
             parser.error(str(e))
+        return 0
+
+    if args.criteria_template:
+        from databases.sugestoes import MODELO_CRITERIOS
+        if Path(args.criteria_template).exists():
+            parser.error(f"{args.criteria_template} already exists; choose another name")
+        Path(args.criteria_template).write_text(MODELO_CRITERIOS, encoding='utf-8')
+        print(f"Criteria file to fill in: {args.criteria_template}")
+        if not (args.suggest or args.import_suggestions):
+            return 0
+
+    if args.suggest or args.import_suggestions:
+        for a in (args.suggest or []) + (args.import_suggestions or []) + ([args.criteria] if args.criteria else []):
+            if not Path(a).is_file():
+                parser.error(f"file not found: {a}")
+        try:
+            if args.suggest:
+                modo_sugerir(args)
+            if args.import_suggestions:
+                modo_importar_ia(args)
+        except ValueError as e:
+            parser.error(str(e))
+        except PermissionError:
+            parser.error('the PRISMA table could not be saved: close it in Excel/LibreOffice and run again')
         return 0
 
     if args.screen:
@@ -1171,6 +1333,8 @@ def main(argv=None):
         colunas_por_base(args.entrada, args.saida, args.ws, grupos)
     except ValueError as e:
         parser.error(str(e))
+    if args.report or args.context:
+        gerar_relatorio(args, grupos)
 
     if args.viewer:
         if args.articles or not pmid_dir_completo(args.entrada):

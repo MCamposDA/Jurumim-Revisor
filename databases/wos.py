@@ -245,11 +245,11 @@ EXPANDED_MAX = 100000     # firstRecord cannot go past this
 STARTER_PAGE = 50
 
 
-def query_wos(query):
+def query_wos(query, avisar=True):
     """PubMed-style free text becomes a WoS topic search; queries with field tags pass as is."""
     if re.search(r'\b[A-Z]{2,3}\s*=', query):
         return query
-    if '[' in query:
+    if '[' in query and avisar:
         print("Warning: the query has PubMed field tags ([tiab], [mh]...), which WoS does not "
               "understand; use --wos-query to give a WoS query (e.g. TS=(...)).")
     return f"TS=({query})"

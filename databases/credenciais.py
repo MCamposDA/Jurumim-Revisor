@@ -10,7 +10,9 @@ Each value is taken from, in this order:
 Keys are typed hidden (like a password) and saved only when the user says so.
 The file is readable by its owner only, and keys are always shown masked.
 --no-prompt turns the questions off; --show-keys and --forget-keys inspect
-and delete the file.
+and delete the file; --set-keys types and saves keys without running a search
+(useful before handing the commands to someone, or to an AI assistant, that
+must not see the keys).
 """
 import getpass
 import json
@@ -151,3 +153,28 @@ def completar(args, dbs, interativo=None, perguntar=input, perguntar_segredo=get
         if ok:
             restantes.append(db)
     return restantes
+
+
+def definir(dbs, perguntar=input, perguntar_segredo=getpass.getpass, interativo=None):
+    """--set-keys: type and save the e-mail / keys of `dbs`, one at a time, without a search."""
+    if interativo is None:
+        interativo = sys.stdin.isatty()
+    if not interativo:
+        print("--set-keys asks in the terminal: run it in a terminal window.")
+        return 1
+    salvos = carregar()
+    for db in dbs:
+        for _, chave, rotulo, onde, secreto in NECESSARIOS[db]:
+            atual = f"Enter keeps {mascarar(salvos[chave], secreto)}" if salvos.get(chave) else 'Enter skips'
+            print(f"\n{NOMES[db]}: {onde}.")
+            valor = _ler(perguntar_segredo if secreto else perguntar,
+                         f"{rotulo} ({'typed hidden; ' if secreto else ''}{atual}): ")
+            if not valor:
+                continue
+            salvar(chave, valor)
+            if db in TIPOS:
+                tipo_attr, pergunta_tipo, prefixo, outro, padrao = TIPOS[db]
+                salvar(tipo_attr, outro if _ler(perguntar, pergunta_tipo).lower().startswith(prefixo) else padrao)
+            print(f"Saved ({mascarar(valor, secreto)}).")
+    print(f"\nKeys file: {ARQUIVO} (see it with --show-keys, delete it with --forget-keys)")
+    return 0

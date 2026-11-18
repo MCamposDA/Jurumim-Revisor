@@ -122,3 +122,35 @@ def escrever_prisma(grupos, mantidos, relatorio, destino, resumos=None, sem_resu
             ws.column_dimensions[get_column_letter(i)].width = larguras.get(nome, 12)
         writer.sheets['summary'].column_dimensions['B'].width = 45
     return destino
+
+
+def ler_contagens(caminho):
+    """
+    PRISMA counts of a _prisma.xlsx, read from its sheets. The screening counts
+    are recomputed here: the Excel formulas have no stored value until Excel
+    opens and saves the file.
+    """
+    from openpyxl import load_workbook
+    wb = load_workbook(caminho, read_only=True)
+    identificados, duplicatas, por_base = 0, 0, []
+    for _, item, n in wb['summary'].iter_rows(min_row=2, max_col=3, values_only=True):
+        if item and str(item).startswith('Records identified from'):
+            por_base.append((str(item).replace('Records identified from ', ''), n))
+        elif item == 'Records identified (total)':
+            identificados = n
+        elif item == 'Duplicate records removed':
+            duplicatas = n
+    linhas = list(wb['records'].iter_rows(values_only=True))
+    wb.close()
+    cab, dados = list(linhas[0]), linhas[1:]
+    i_dec, i_mot = cab.index('screening_decision'), cab.index('exclusion_reason')
+    decisoes = [(str(d[i_dec] or '').strip().lower(), str(d[i_mot] or '').strip()) for d in dados]
+    sem_resumo = sum(1 for dec, mot in decisoes if dec == 'exclude' and mot == SEM_RESUMO)
+    return {
+        'por_base': por_base, 'identificados': identificados, 'duplicatas': duplicatas,
+        'triados': len(dados), 'sem_resumo': sem_resumo,
+        'excluidos': sum(1 for dec, _ in decisoes if dec == 'exclude') - sem_resumo,
+        'incluidos': sum(1 for dec, _ in decisoes if dec == 'include'),
+        'talvez': sum(1 for dec, _ in decisoes if dec == 'maybe'),
+        'pendentes': sum(1 for dec, _ in decisoes if dec not in DECISOES),
+    }

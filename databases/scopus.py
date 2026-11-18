@@ -265,12 +265,12 @@ PESSOAL_MAX = 5000      # a personal (non-subscriber) key cannot page past this
 PESSOAL_PAGINA = 25     # records per request with a personal key
 
 
-def query_scopus(query):
+def query_scopus(query, avisar=True):
     """Free text becomes TITLE-ABS-KEY(...); queries with Scopus field codes pass as is."""
     if re.search(r'\b(?:TITLE-ABS-KEY|TITLE-ABS|TITLE|ABS|KEY|AUTH|AUTHOR-NAME|AFFIL|SRCTITLE|'
                  r'PUBYEAR|DOI|PMID|DOCTYPE|LANGUAGE|ALL)\s*\(', query) or 'PUBYEAR' in query:
         return query
-    if '[' in query:
+    if '[' in query and avisar:
         print("Warning: the query has PubMed field tags ([tiab], [mh]...), which Scopus does not "
               "understand; use --scopus-query to give a Scopus query (e.g. TITLE-ABS-KEY(...)).")
     return f"TITLE-ABS-KEY({query})"

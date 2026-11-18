@@ -9,6 +9,10 @@ openpyxl>=3.0
 # PubMed downloads (-p) and abstracts filled from PubMed (--fill-abstracts)
 biopython>=1.79
 
+# Report (--report, --context): co-occurrence network, trend charts, PRISMA flow diagram
+matplotlib>=3.5
+networkx>=2.8
+
 # Viewer (--viewer)
 streamlit>=1.30
 

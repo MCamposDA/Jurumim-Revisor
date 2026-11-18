@@ -139,7 +139,7 @@ def comando_preencher(estado):
 def comando_triagem(estado):
     mesclado = (estado.get('mesclado') or '').strip()
     prisma = (estado.get('prisma') or '').strip()
-    manter = [d for d in ('include', 'maybe', 'exclude') if estado.get(f'keep_{d}')]
+    manter = [d for d in ('include', 'maybe', 'unmarked', 'exclude') if estado.get(f'keep_{d}')]
     problemas = []
     for rotulo, caminho in (('merged file', mesclado), ('PRISMA table', prisma)):
         if not caminho:
@@ -152,6 +152,69 @@ def comando_triagem(estado):
     if (estado.get('screen_out') or '').strip():
         argv += ['--screen-out', estado['screen_out'].strip()]
     return _comum(estado, argv), {}, problemas
+
+
+def _arquivos_triagem(estado, problemas, outro=None):
+    """Check the files of a screening action: (label, path) pairs plus the PRISMA table."""
+    prisma = (estado.get('prisma') or '').strip()
+    for rotulo, caminho in ([outro] if outro else []) + [('PRISMA table', prisma)]:
+        if not caminho:
+            problemas.append(f'Choose the {rotulo}.')
+        elif not Path(caminho).is_file():
+            problemas.append(f'File not found: {caminho}')
+    return prisma
+
+
+def comando_sugerir(estado):
+    """--suggest: default criteria plus the researcher's terms, years and criteria file."""
+    problemas = []
+    mesclado = (estado.get('mesclado') or '').strip()
+    prisma = _arquivos_triagem(estado, problemas, ('merged file', mesclado))
+    argv = ['--suggest', mesclado, prisma]
+    criterios = (estado.get('criterios') or '').strip()
+    if criterios:
+        if not Path(criterios).is_file():
+            problemas.append(f'Criteria file not found: {criterios}')
+        argv += ['--criteria', criterios]
+    incluir, excluir = termos_de_texto(estado.get('incluir')), termos_de_texto(estado.get('excluir'))
+    if incluir:
+        argv += ['--include-terms'] + incluir
+    if excluir:
+        argv += ['--exclude-terms'] + excluir
+    anos = (estado.get('anos') or '').strip()
+    if anos:
+        if not re.fullmatch(r'(\d{4})?\s*-\s*(\d{4})?', anos) or anos.strip() == '-':
+            problemas.append('Years look like 2000-2026, 2000- or -2026.')
+        argv += ['--years', anos]
+    return _comum(estado, argv), {}, problemas
+
+
+def comando_importar_ia(estado):
+    """--import-suggestions: CSV written by a language model -> ai_* columns."""
+    problemas = []
+    csv_ia = (estado.get('csv_ia') or '').strip()
+    prisma = _arquivos_triagem(estado, problemas, ('suggestions CSV', csv_ia))
+    argv = ['--import-suggestions', csv_ia, prisma]
+    if (estado.get('modelo_ia') or '').strip():
+        argv += ['--ai-model', estado['modelo_ia'].strip()]
+    return _comum(estado, argv), {}, problemas
+
+
+def comando_ia(estado):
+    """AI assistant page: prepare the files for the assistant (step 4 analysis + --context) or load its CSV."""
+    if estado.get('acao_ia') == 'importar':
+        return comando_importar_ia(estado)
+    return comando_analise(dict(estado, contexto=True))
+
+
+def comando_tela_triagem(estado):
+    """Screen page: keep the screened records, suggest from criteria, or import AI suggestions."""
+    acao = estado.get('acao_triagem') or 'keep'
+    if acao == 'suggest':
+        return comando_sugerir(estado)
+    if acao == 'import':
+        return comando_importar_ia(estado)
+    return comando_triagem(estado)
 
 
 # =====================================================
@@ -220,7 +283,36 @@ def comando_analise(estado):
     for chave, flag in (('lemma', '--lemma'), ('articles', '--articles'), ('viewer', '--viewer')):
         if estado.get(chave):
             argv.append(flag)
+    _opcoes_relatorio(estado, argv, problemas, so_artigos)
     return _comum(estado, argv), {}, problemas
+
+
+def _opcoes_relatorio(estado, argv, problemas, so_artigos):
+    """--report / --context and the network options (only written when they differ from the default)."""
+    relatorio, contexto = estado.get('relatorio'), estado.get('contexto')
+    if not (relatorio or contexto):
+        return
+    if so_artigos:
+        problemas.append('The report needs the table name (.xlsx).')
+    argv.append('--context' if contexto else '--report')
+    if estado.get('relatorio_pt'):
+        argv.append('--report-pt')
+    for chave, flag, padrao, minimo in (('rede_min', '--net-min', 3, 1), ('rede_max', '--net-max-nodes', 300, 2)):
+        valor = str(estado.get(chave) or '').strip()
+        if not valor:
+            continue
+        if not valor.isdigit() or int(valor) < minimo:
+            problemas.append(f'{flag} must be a whole number of at least {minimo}.')
+        elif int(valor) != padrao:
+            argv += [flag, valor]
+    if estado.get('rede_genericas'):
+        argv.append('--net-keep-generic')
+
+
+def pasta_relatorio(estado, pasta):
+    """<topic folder>/<input name>_report, where --report writes (next to the table)."""
+    entrada = (estado.get('entrada') or '').strip()
+    return Path(pasta) / (Path(entrada).stem + '_report') if entrada else None
 
 
 # =====================================================
@@ -271,34 +363,25 @@ def arquivos_do_topico(pasta):
 
 
 def resumo_prisma(caminho):
-    """
-    PRISMA counts of a _prisma.xlsx, read from its sheets (the screening counts
-    are recomputed here, as the Excel formulas have no stored value until Excel opens the file).
-    """
+    """PRISMA counts of a _prisma.xlsx (see databases/prisma.py: ler_contagens)."""
+    from databases.prisma import ler_contagens
+    return ler_contagens(caminho)
+
+
+def resumo_sugestoes(caminho):
+    """{'rules': Counter, 'ai': Counter} of the suggestion columns of a _prisma.xlsx (empty when absent)."""
+    from collections import Counter
     from openpyxl import load_workbook
     wb = load_workbook(caminho, read_only=True)
-    identificados, duplicatas, por_base = 0, 0, []
-    for estagio, item, n in wb['summary'].iter_rows(min_row=2, values_only=True):
-        if item and item.startswith('Records identified from'):
-            por_base.append((item.replace('Records identified from ', ''), n))
-        elif item == 'Records identified (total)':
-            identificados = n
-        elif item == 'Duplicate records removed':
-            duplicatas = n
     linhas = list(wb['records'].iter_rows(values_only=True))
     wb.close()
-    cab, dados = list(linhas[0]), linhas[1:]
-    i_dec, i_mot = cab.index('screening_decision'), cab.index('exclusion_reason')
-    decisoes = [((d[i_dec] or '').strip().lower(), (d[i_mot] or '').strip()) for d in dados]
-    sem_resumo = sum(1 for dec, mot in decisoes if dec == 'exclude' and mot == 'No abstract available')
-    return {
-        'por_base': por_base, 'identificados': identificados, 'duplicatas': duplicatas,
-        'triados': len(dados), 'sem_resumo': sem_resumo,
-        'excluidos': sum(1 for dec, _ in decisoes if dec == 'exclude') - sem_resumo,
-        'incluidos': sum(1 for dec, _ in decisoes if dec == 'include'),
-        'talvez': sum(1 for dec, _ in decisoes if dec == 'maybe'),
-        'pendentes': sum(1 for dec, _ in decisoes if dec not in ('include', 'exclude', 'maybe')),
-    }
+    cab = list(linhas[0]) if linhas else []
+    saida = {}
+    for chave, coluna in (('rules', 'rules_suggestion'), ('ai', 'ai_suggestion')):
+        if coluna in cab:
+            i = cab.index(coluna)
+            saida[chave] = Counter(str(d[i]).strip().lower() for d in linhas[1:] if d[i])
+    return saida
 
 
 def formato_arquivo(caminho):
@@ -322,3 +405,42 @@ def formato_arquivo(caminho):
         return nomes.get(bases.pop(), 'MEDLINE')
     except Exception:
         return 'unreadable'
+
+
+# =====================================================
+# AI assistant page
+# =====================================================
+REPOSITORIO = 'MCamposDA/Jurumim-Revisor'
+SKILL = RAIZ / 'skills' / 'jurumim-review'
+
+
+def comandos_instalacao():
+    """(tool, commands) to install the jurumim-review skill, from GitHub and from this copy."""
+    url = f'https://github.com/{REPOSITORIO}'
+    return [
+        ('Claude Code', [f'claude plugin marketplace add {REPOSITORIO}',
+                         'claude plugin install jurumim-revisor@jurumim'],
+         [f'claude plugin marketplace add {shlex.quote(str(RAIZ))}',
+          'claude plugin install jurumim-revisor@jurumim']),
+        ('Gemini CLI', [f'gemini extensions install {url}'],
+         [f'gemini extensions link {shlex.quote(str(RAIZ))}']),
+        ('Antigravity CLI', [f'agy plugin install {url}'],
+         [f'agy plugin install {shlex.quote(str(RAIZ))}']),
+    ]
+
+
+def instrucoes_gem():
+    """Instructions of a Gemini Gem, as written in the skill (references/web.md), in one paragraph."""
+    try:
+        linhas = (SKILL / 'references' / 'web.md').read_text(encoding='utf-8').splitlines()
+    except OSError:
+        return ''
+    bloco, dentro = [], False
+    for linha in linhas:
+        if linha.startswith('    You help'):
+            dentro = True
+        if dentro:
+            if not linha.startswith('    '):
+                break
+            bloco.append(linha.strip())
+    return ' '.join(bloco)

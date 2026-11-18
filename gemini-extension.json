@@ -1,0 +1,6 @@
+{
+  "name": "jurumim-revisor",
+  "version": "1.0.0",
+  "description": "Literature reviews with Jurumim Revisor: plan and run PubMed, Web of Science and Scopus searches and merges, then read the context folder of a run to answer questions with record IDs, suggest screening decisions and explain word-network and trend patterns. Suggestions only; the researcher decides.",
+  "contextFileName": "GEMINI.md"
+}

@@ -24,6 +24,14 @@ from tkinter import font as tkfont
 
 from . import comandos as C
 
+try:
+    NO_WSL = 'microsoft' in Path('/proc/version').read_text().lower()
+except OSError:
+    NO_WSL = False
+
+NOTA_INSTALACAO = ('Each person runs this on their own computer, once: it installs only for you. "From the internet" '
+                   'is the same for everyone; "From this computer" shows where Jurumim is on this computer.')
+
 # Layout: a left rail with the four review steps (a real sequence: search, merge,
 # screen, analyse) and two utilities; the form of the chosen step on the right;
 # docked below, the exact terminal command and its live log.
@@ -129,7 +137,8 @@ class Rolavel(tk.Frame):
 class App:
     PAGINAS = [('search', '1', 'Search databases'), ('merge', '2', 'Merge files'),
                ('screen', '3', 'Screen'), ('analyse', '4', 'Analyse')]
-    UTILIDADES = [('fill', 'Fill abstracts of a file'), ('keys', 'API keys')]
+    UTILIDADES = [('ai', 'AI assistant'), ('fill', 'Fill abstracts of a file'), ('keys', 'API keys'),
+                  ('help', 'Help')]
 
     def __init__(self, root):
         self.root = root
@@ -160,7 +169,8 @@ class App:
         self.paginas = {}
         for nome, construir in (('search', self._pagina_busca), ('merge', self._pagina_merge),
                                 ('screen', self._pagina_triagem), ('analyse', self._pagina_analise),
-                                ('fill', self._pagina_preencher), ('keys', self._pagina_chaves)):
+                                ('fill', self._pagina_preencher), ('keys', self._pagina_chaves),
+                                ('ai', self._pagina_ia), ('help', self._pagina_ajuda)):
             quadro = Rolavel(self.area)
             construir(quadro.corpo)
             self.paginas[nome] = quadro
@@ -226,6 +236,8 @@ class App:
         s.map('TButton', background=[('active', COR['folha_clara']), ('disabled', COR['superficie'])],
               foreground=[('disabled', COR['linha'])])
         s.configure('Parar.TButton', foreground=COR['erro'])
+        s.configure('Doca.TCheckbutton', background=COR['fundo'], indicatorbackground=COR['superficie'])
+        s.map('Doca.TCheckbutton', background=[('active', COR['fundo'])])
         s.configure('Treeview', background=COR['superficie'], fieldbackground=COR['superficie'],
                     rowheight=24, borderwidth=0)
         s.configure('Treeview.Heading', background=COR['fundo'], font=self.f['secao'], relief='flat')
@@ -257,10 +269,13 @@ class App:
             'scopus_view': 'complete', 'scopus_insttoken': '', 'scopus_query': '',
             'preencher': True, 'manter_sem_resumo': False, 'salvar_chaves': False,
             'merge_out': '', 'mesclado': '', 'prisma': '', 'screen_out': '',
-            'keep_include': True, 'keep_maybe': False, 'keep_exclude': False,
+            'keep_include': True, 'keep_maybe': False, 'keep_exclude': False, 'keep_unmarked': False,
             'entrada': '', 'saida': 'general.xlsx', 'modo': 'frequency', 'stopwords': '',
             'stopword_file': '', 'lemma': False, 'articles': False, 'viewer': False,
             'arquivo_preencher': '', 'fill_out': '', 's2_apikey': '', 'openalex_apikey': '',
+            'acao_triagem': 'keep', 'criterios': '', 'anos': '', 'csv_ia': '', 'modelo_ia': '',
+            'relatorio': False, 'relatorio_pt': False, 'contexto': False, 'rede_min': '3', 'rede_max': '300',
+            'rede_genericas': False, 'avancado': False, 'ia_onde': 'claude_code', 'acao_ia': 'contexto',
         }
         secretos = {'ncbi_apikey', 'wos_apikey', 'scopus_apikey', 'scopus_insttoken', 's2_apikey',
                     'openalex_apikey'}
@@ -270,6 +285,9 @@ class App:
             var = tk.BooleanVar(value=valor) if isinstance(valor, bool) else tk.StringVar(value=valor)
             var.trace_add('write', lambda *a: self.atualizar())
             self.v[k] = var
+        if self.v['acao_triagem'].get() not in ('keep', 'suggest'):
+            self.v['acao_triagem'].set('keep')      # AI suggestions moved to the AI assistant page
+        self.rotulos_flag = []
         self._adiado = None
         self.v['topico'].trace_add('write', lambda *a: self._topico_mudou())
         self.secretos = secretos
@@ -331,8 +349,8 @@ class App:
             anchor='w', padx=14, pady=(0, 6))
         for nome, texto in self.UTILIDADES:
             self.botoes[nome] = self._item_trilho(trilho, nome, texto, None)
-        rodape = tk.Label(trilho, text='Runs Jurumim_Revisor.py.\nEvery command is shown below\n'
-                                       'and can be copied to a terminal.',
+        rodape = tk.Label(trilho, text='Follow the steps in order.\nEverything is saved in the\n'
+                                       'topic folder (top right).',
                           font=self.f['dica'], justify='left', bg=COR['trilho'], fg=COR['suave'])
         rodape.pack(side='bottom', anchor='w', padx=14, pady=14)
 
@@ -383,12 +401,16 @@ class App:
 
     def _dica(self, pai, texto, flag=None, linha=None, coluna=1, onde='grid'):
         quadro = tk.Frame(pai, bg=COR['superficie'])
-        if flag:
-            tk.Label(quadro, text=flag, font=self.f['mono_peq'], bg=COR['superficie'], fg=COR['rio']).pack(
-                side='left', padx=(0, 6))
+        rotulo_texto = None
         if texto:
-            tk.Label(quadro, text=texto, font=self.f['dica'], bg=COR['superficie'], fg=COR['suave'],
-                     wraplength=560, justify='left').pack(side='left')
+            rotulo_texto = tk.Label(quadro, text=texto, font=self.f['dica'], bg=COR['superficie'], fg=COR['suave'],
+                                    wraplength=560, justify='left')
+            rotulo_texto.pack(side='left')
+        if flag:
+            rotulo = tk.Label(quadro, text=flag, font=self.f['mono_peq'], bg=COR['superficie'], fg=COR['rio'])
+            self.rotulos_flag.append((rotulo, rotulo_texto))
+            if self.v['avancado'].get():
+                rotulo.pack(side='left', padx=(0, 6), **({'before': rotulo_texto} if rotulo_texto else {}))
         if onde == 'grid':
             quadro.grid(row=linha, column=coluna, sticky='w', pady=(0, 8))
         else:
@@ -418,17 +440,22 @@ class App:
             q.grid(columnspan=2, padx=(26, 0))
 
     def _radios(self, pai, linha, rotulo, chave, opcoes, flag=None, dica=''):
-        tk.Label(pai, text=rotulo, font=self.f['corpo'], bg=COR['superficie'], fg=COR['tinta']).grid(
-            row=linha, column=0, sticky='nw', padx=(0, 14), pady=(3, 0))
         quadro = tk.Frame(pai, bg=COR['superficie'])
-        quadro.grid(row=linha, column=1, sticky='w')
+        if rotulo:
+            tk.Label(pai, text=rotulo, font=self.f['corpo'], bg=COR['superficie'], fg=COR['tinta']).grid(
+                row=linha, column=0, sticky='nw', padx=(0, 14), pady=(3, 0))
+            quadro.grid(row=linha, column=1, sticky='w')
+        else:
+            quadro.grid(row=linha, column=0, columnspan=2, sticky='w')
         botoes = []
         for valor, texto in opcoes:
             b = ttk.Radiobutton(quadro, text=texto, value=valor, variable=self.v[chave])
             b.pack(side='left', padx=(0, 16))
             botoes.append(b)
         if dica or flag:
-            self._dica(pai, dica, flag, linha + 1)
+            q = self._dica(pai, dica, flag, linha + 1, coluna=1 if rotulo else 0)
+            if not rotulo:
+                q.grid(columnspan=2)
         return botoes
 
     def _texto(self, pai, linha, rotulo, chave, altura, dica='', flag=None):
@@ -456,69 +483,75 @@ class App:
             return 'A saved key is in use when the field is empty.'
 
     # ------------------------------------------------------------------ pages
+    # Labels and hints speak of what the researcher wants, not of flags. The flags
+    # appear next to the hints only with "Show terminal commands" (bottom right).
+    def _paragrafo(self, pai, linha, texto, cor=None, fonte=None, coluna=0):
+        tk.Label(pai, text=texto, font=fonte or self.f['corpo'], bg=COR['superficie'], fg=cor or COR['tinta'],
+                 wraplength=720, justify='left').grid(row=linha, column=coluna, columnspan=2, sticky='w',
+                                                       pady=(0, 6))
+
     def _pagina_busca(self, p):
         self._titulo(p, '1  Search databases',
-                     'Downloads the query from each database you tick, keeps each raw file, removes the '
-                     'duplicates (PubMed > Web of Science > Scopus) and writes the merged file with its '
-                     'PRISMA table into the topic folder.')
-        b = self._secao(p, 'Query')
-        self._campo(b, 0, 'Search', 'query', 'Free text is sent to each database in its own syntax '
-                    '(TS=(…) for Web of Science, TITLE-ABS-KEY(…) for Scopus).', '-q', largura=60)
+                     'Type what you are looking for and tick where to search. Jurumim downloads the articles, '
+                     'removes the ones found twice and prepares your PRISMA table.')
+        b = self._secao(p, 'What are you looking for?')
+        self._campo(b, 0, 'Search words', 'query', 'As you would type them in PubMed, e.g.  Nyssomyia  or  '
+                    '"sand fly" AND Brazil', '-q', largura=60)
 
         b = self._secao(p, 'PubMed')
-        self._opcao(b, 0, 'Search PubMed', 'db_pubmed', 'No key needed: NCBI asks for an e-mail.', '--db pubmed')
-        self._campo(b, 2, 'E-mail', 'email', flag='--email')
-        self._campo(b, 4, 'NCBI key', 'ncbi_apikey', 'Optional: raises the request rate from 3 to 10 per second.',
+        self._opcao(b, 0, 'Search PubMed', 'db_pubmed', 'Free. NCBI only asks for an e-mail.', '--db pubmed')
+        self._campo(b, 2, 'Your e-mail', 'email', flag='--email')
+        self._campo(b, 4, 'NCBI key', 'ncbi_apikey', 'Optional. Only makes large downloads faster.',
                     '--apikey', secreto=True, largura=32)
 
         b = self._secao(p, 'Web of Science')
-        self._opcao(b, 0, 'Search Web of Science', 'db_wos', '', '--db wos')
+        self._opcao(b, 0, 'Search Web of Science', 'db_wos', 'Needs an API key from Clarivate '
+                    '(see Help).', '--db wos')
         self._campo(b, 2, 'API key', 'wos_apikey', self._nota_chave('wos_apikey'), 'WOS_API_KEY', secreto=True,
                     largura=40)
-        self._radios(b, 4, 'Key', 'wos_api', [('expanded', 'Expanded (institutional, abstracts)'),
-                                              ('starter', 'Starter (free, titles only)')], '--wos-api')
-        self._campo(b, 6, 'Own query', 'wos_query', 'Optional, in WoS syntax, e.g. TS=(Nyssomyia) AND PY=(2015-2025)',
-                    '--wos-query', largura=60)
+        self._radios(b, 4, 'Type of key', 'wos_api', [('expanded', 'Institutional (with abstracts)'),
+                                                      ('starter', 'Free (titles only)')], '--wos-api')
+        self._campo(b, 6, 'Other words', 'wos_query', 'Optional: a different search only for Web of Science, '
+                    'e.g. TS=(Nyssomyia) AND PY=(2015-2025)', '--wos-query', largura=60)
 
         b = self._secao(p, 'Scopus')
-        self._opcao(b, 0, 'Search Scopus', 'db_scopus', '', '--db scopus')
+        self._opcao(b, 0, 'Search Scopus', 'db_scopus', 'Needs an API key from Elsevier, free for anyone '
+                    '(see Help).', '--db scopus')
         self._campo(b, 2, 'API key', 'scopus_apikey', self._nota_chave('scopus_apikey'), 'SCOPUS_API_KEY',
                     secreto=True, largura=40)
-        self._radios(b, 4, 'Key', 'scopus_key', [('institutional', 'Institutional (abstracts)'),
-                                                 ('personal', 'Personal (no institution, titles only)')],
+        self._radios(b, 4, 'Type of key', 'scopus_key', [('institutional', 'Institutional (with abstracts)'),
+                                                         ('personal', 'Personal (titles only)')],
                      '--scopus-key')
-        self.radios_view = self._radios(b, 6, 'View', 'scopus_view', [('complete', 'Complete'),
-                                                                      ('standard', 'Standard (titles only)')],
+        self.radios_view = self._radios(b, 6, 'Detail', 'scopus_view', [('complete', 'Full records'),
+                                                                        ('standard', 'Titles only')],
                                         '--scopus-view', 'Institutional keys only.')
-        self._campo(b, 8, 'Inst. token', 'scopus_insttoken', 'Only to use an institutional key outside the '
+        self._campo(b, 8, 'Inst. token', 'scopus_insttoken', 'Only to use an institutional key away from the '
                     'institution network.', 'SCOPUS_INSTTOKEN', secreto=True, largura=32)
-        self._campo(b, 10, 'Own query', 'scopus_query', 'Optional, in Scopus syntax, e.g. '
+        self._campo(b, 10, 'Other words', 'scopus_query', 'Optional: a different search only for Scopus, e.g. '
                     'TITLE-ABS-KEY(Nyssomyia) AND PUBYEAR > 2014', '--scopus-query', largura=60)
 
         b = self._secao(p, 'Abstracts and keys')
         self._opcao_resumos(b, 0)
-        self._opcao(b, 4, 'Save the keys typed above for the next runs', 'salvar_chaves',
-                    'Stored in ~/.jurumim_keys.json, readable by you only (the terminal tool uses the same file).')
+        self._opcao(b, 4, 'Remember the keys typed on this page', 'salvar_chaves',
+                    'Saved on this computer, readable only by you.')
 
     def _opcao_resumos(self, b, linha):
-        self._opcao(b, linha, 'Fill missing abstracts from open sources', 'preencher',
-                    'PubMed by PMID, then Crossref, Semantic Scholar and OpenAlex by DOI; English only. '
-                    'Looked up after duplicates are removed.', '--fill-abstracts')
-        self._opcao(b, linha + 2, 'Keep records without abstract in the analysis', 'manter_sem_resumo',
-                    'Off: they go to *_no_abstract.txt and are pre-marked "exclude" in the PRISMA table.',
+        self._opcao(b, linha, 'Look for missing abstracts in open sources', 'preencher',
+                    'Recommended: articles without an abstract cannot be analysed.', '--fill-abstracts')
+        self._opcao(b, linha + 2, 'Keep articles without abstract', 'manter_sem_resumo',
+                    'Off: they are set aside and marked "exclude" in the PRISMA table.',
                     '--keep-no-abstract')
 
     def _pagina_merge(self, p):
         self._titulo(p, '2  Merge files',
-                     'Merges files you exported from the websites (PubMed .txt, Web of Science plain text or '
-                     'tab-delimited, Scopus CSV or RIS) or downloaded in step 1. The order of the files does '
-                     'not matter: PubMed > Web of Science > Scopus always.')
-        b = self._secao(p, 'Files')
+                     'Already exported files from the PubMed, Web of Science or Scopus websites? Add them here. '
+                     'Articles found in more than one file are kept once.')
+        b = self._secao(p, 'Your files')
         quadro = tk.Frame(b, bg=COR['superficie'])
         quadro.grid(row=0, column=0, columnspan=2, sticky='we')
         self.lista = ttk.Treeview(quadro, columns=('formato', 'pasta'), height=7, selectmode='extended')
         self.lista.heading('#0', text='FILE', anchor='w')
-        self.lista.heading('formato', text='FORMAT', anchor='w')
+        self.lista.heading('formato', text='RECOGNISED AS', anchor='w')
         self.lista.heading('pasta', text='FOLDER', anchor='w')
         self.lista.column('#0', width=260)
         self.lista.column('formato', width=190)
@@ -527,98 +560,147 @@ class App:
         botoes = tk.Frame(b, bg=COR['superficie'])
         botoes.grid(row=1, column=0, columnspan=2, sticky='w', pady=(8, 0))
         ttk.Button(botoes, text='Add files…', command=self._adicionar_arquivos).pack(side='left', padx=(0, 6))
-        ttk.Button(botoes, text="Add this topic's downloads", command=self._adicionar_do_topico).pack(
+        ttk.Button(botoes, text='Add the downloads of step 1', command=self._adicionar_do_topico).pack(
             side='left', padx=(0, 6))
         ttk.Button(botoes, text='Remove selected', command=self._remover_arquivos).pack(side='left')
-        self._dica(b, '', '--merge FILE …', 2, coluna=0).grid(columnspan=2, pady=(6, 8))
+        self._dica(b, 'PubMed .txt, Web of Science plain text or tab-delimited, Scopus CSV or RIS. '
+                      'The order does not matter.', '--merge FILE …', 2, coluna=0).grid(columnspan=2, pady=(6, 8))
         self._preencher_lista()
 
-        b = self._secao(p, 'Output')
-        self._campo(b, 0, 'Merged file', 'merge_out', 'Written into the topic folder with *_prisma.xlsx and, '
-                    'if any, *_no_abstract.txt.', '--merge-out', largura=40)
+        b = self._secao(p, 'Result')
+        self._campo(b, 0, 'Name', 'merge_out', 'Saved in the topic folder, with its PRISMA table.',
+                    '--merge-out', largura=40)
         b = self._secao(p, 'Abstracts')
         self._opcao_resumos(b, 0)
 
     def _pagina_triagem(self, p):
         self._titulo(p, '3  Screen',
-                     'Open the PRISMA table, fill in screening_decision in the records sheet (include, exclude '
-                     'or maybe), save it, then keep only the records you chose. The merged file is not changed.')
-        b = self._secao(p, 'PRISMA flow of this topic')
+                     'Decide which articles enter the review: open the PRISMA table, write include, exclude '
+                     'or maybe in the screening_decision column, save it, then come back and keep the chosen ones.')
+        b = self._secao(p, 'Where you are')
         self.prisma_canvas = tk.Canvas(b, width=700, height=236, bg=COR['superficie'], highlightthickness=0)
         self.prisma_canvas.grid(row=0, column=0, columnspan=2, sticky='w')
+        self.rotulo_sugestoes = tk.Label(b, text='', font=self.f['dica'], bg=COR['superficie'], fg=COR['suave'],
+                                         wraplength=700, justify='left')
+        self.rotulo_sugestoes.grid(row=3, column=0, columnspan=2, sticky='w', pady=(6, 0))
         botoes = tk.Frame(b, bg=COR['superficie'])
         botoes.grid(row=1, column=0, columnspan=2, sticky='w', pady=(6, 0))
-        ttk.Button(botoes, text='Open PRISMA table', command=lambda: self._abrir(self.v['prisma'].get())).pack(
+        ttk.Button(botoes, text='Open the PRISMA table', command=lambda: self._abrir(self.v['prisma'].get())).pack(
             side='left', padx=(0, 6))
         ttk.Button(botoes, text='Refresh counts', command=self._desenhar_prisma).pack(side='left')
+        if 'microsoft' in platform.release().lower():
+            self._dica(b, 'Excel opens files from WSL in Protected View: click "Enable Editing" in the yellow bar '
+                          'to type and use the include / exclude / maybe list.', None, 2, coluna=0).grid(columnspan=2)
 
-        b = self._secao(p, 'Files')
-        self._campo(b, 0, 'Merged file', 'mesclado', flag='--screen MERGED.txt', largura=56,
-                    arquivo=[('MEDLINE', '*.txt')])
-        self._campo(b, 2, 'PRISMA table', 'prisma', flag='PRISMA.xlsx', largura=56, arquivo=[('Excel', '*.xlsx')])
-        b = self._secao(p, 'Keep')
-        tk.Label(b, text='Decisions', font=self.f['corpo'], bg=COR['superficie']).grid(row=0, column=0, sticky='w',
-                                                                                         padx=(0, 14))
+        b = self._secao(p, 'What do you want to do?')
+        self._radios(b, 0, '', 'acao_triagem', [('keep', 'Keep the articles I chose'),
+                                                ('suggest', 'Get suggestions first')],
+                     dica='Suggestions are optional. They fill their own columns and never change your decisions. '
+                          'Suggestions of an AI assistant: page AI assistant.')
+
+        b = self._secao(p, 'Keep the articles I chose')
+        tk.Label(b, text='Decisions to keep', font=self.f['corpo'], bg=COR['superficie']).grid(
+            row=0, column=0, sticky='w', padx=(0, 14))
         q = tk.Frame(b, bg=COR['superficie'])
         q.grid(row=0, column=1, sticky='w')
-        for chave, texto in (('keep_include', 'include'), ('keep_maybe', 'maybe'), ('keep_exclude', 'exclude')):
+        for chave, texto in (('keep_include', 'include'), ('keep_maybe', 'maybe'),
+                             ('keep_unmarked', 'not marked'), ('keep_exclude', 'exclude')):
             ttk.Checkbutton(q, text=texto, variable=self.v[chave]).pack(side='left', padx=(0, 16))
-        self._dica(b, 'Records without a decision are left out.', '--keep', 1)
-        self._campo(b, 2, 'Output', 'screen_out', 'Optional; default <merged>_screened.txt', '--screen-out',
+        self._dica(b, 'With many articles, mark only the ones to exclude and keep include + not marked. '
+                      'Articles without abstract are already marked exclude.', '--keep', 1)
+        self._campo(b, 2, 'Name', 'screen_out', 'Optional. Default: <merged file>_screened.txt', '--screen-out',
                     largura=40)
+
+        b = self._secao(p, 'Get suggestions first (optional)')
+        self._paragrafo(b, 0, 'Jurumim marks errata, letters, editorials, notes and articles without abstract as '
+                              '"exclude", and reviews or articles in other languages as "maybe". Add your own rules '
+                              'below; words are looked for in the title and the abstract.', cor=COR['suave'],
+                        fonte=self.f['dica'])
+        self.caixa_incluir = self._texto(b, 1, 'Must mention', 'incluir', 2,
+                                         'One word or phrase per line. Articles without any of them: "exclude".',
+                                         '--include-terms')
+        self.caixa_excluir = self._texto(b, 3, 'Exclude if it mentions', 'excluir', 2, 'One word or phrase per line.',
+                                         '--exclude-terms')
+        self._campo(b, 5, 'Years', 'anos', 'e.g. 2000-2026, 2000- (from) or -2026 (until)', '--years', largura=14)
+        self._campo(b, 7, 'Rules file', 'criterios', 'Optional: rules saved in a file, also for document types '
+                    'and languages.', '--criteria', largura=44, arquivo=[('Text', '*.txt')])
+        ttk.Button(b, text='Create a rules file…', command=self._novo_criterios).grid(row=9, column=1, sticky='w',
+                                                                                       pady=(0, 8))
+
+        b = self._secao(p, 'Files used')
+        self._campo(b, 0, 'Merged file', 'mesclado', 'Filled in from the topic folder.', '--screen MERGED.txt',
+                    largura=56, arquivo=[('MEDLINE', '*.txt')])
+        self._campo(b, 2, 'PRISMA table', 'prisma', '', 'PRISMA.xlsx', largura=56, arquivo=[('Excel', '*.xlsx')])
 
     def _pagina_analise(self, p):
         self._titulo(p, '4  Analyse',
-                     'Counts words in titles and abstracts. For a merged file, each table also gets one '
-                     'articles_<database> column per database.')
-        b = self._secao(p, 'Files')
-        self._campo(b, 0, 'Input', 'entrada', 'The screened file (or the merged one).', 'input.txt', largura=56,
-                    arquivo=[('MEDLINE', '*.txt')])
-        self._campo(b, 2, 'Table', 'saida', 'Written into the topic folder.', 'output.xlsx', largura=30)
+                     'Count the words of titles and abstracts and, if you want, draw the word network, the trends '
+                     'per year and the PRISMA diagram, with a methods text ready to adapt.')
+        b = self._secao(p, 'Articles')
+        self._campo(b, 0, 'Analyse', 'entrada', 'Usually the screened file; filled in from the topic folder.',
+                    'input.txt', largura=56, arquivo=[('MEDLINE', '*.txt')])
+        self._campo(b, 2, 'Table name', 'saida', 'An Excel table saved in the topic folder.', 'output.xlsx',
+                    largura=30)
 
-        b = self._secao(p, 'Count')
-        self._radios(b, 0, 'Mode', 'modo', [('frequency', 'Every word'), ('groups', 'Synonym groups'),
-                                            ('search', 'Search terms')])
+        b = self._secao(p, 'What to count')
+        self._radios(b, 0, '', 'modo', [('frequency', 'Every word'), ('groups', 'Groups of synonyms'),
+                                        ('search', 'Only some terms')])
         self.caixa_grupos = self._texto(b, 2, 'Groups', 'grupos', 3,
-                                        'One group per line: sandfly: phlebotomine, phlebotomines', '-st / -so')
+                                        'One group per line, main word first:  sandfly: phlebotomine, phlebotomines',
+                                        '-st / -so')
         self.caixa_termos = self._texto(b, 4, 'Terms', 'termos', 3,
-                                        'One per line; phrases and hyphenated terms allowed (sand flies, covid-19).',
-                                        '--ws')
-        self._campo(b, 6, 'Stopwords', 'stopwords', 'Extra words to ignore, separated by spaces or commas.', '-sw',
-                    largura=44)
-        self._campo(b, 8, 'Stopword file', 'stopword_file', '', '-sw FILE', largura=44,
+                                        'One per line; phrases allowed, e.g.  sand flies', '--ws')
+        self._campo(b, 6, 'Words to ignore', 'stopwords', 'Besides the usual ones (the, of, and…), separated by '
+                    'spaces or commas.', '-sw', largura=44)
+        self._campo(b, 8, 'Or from a file', 'stopword_file', '', '-sw FILE', largura=44,
                     arquivo=[('Text', '*.txt *.csv')])
 
         b = self._secao(p, 'Options')
-        self._opcao(b, 0, 'Merge singular and plural (noun lemmas)', 'lemma', 'viruses → virus; does not change '
-                    'search terms.', '--lemma')
-        self._opcao(b, 2, 'Write one folder per article', 'articles', 'Word table and all fields of each article '
-                    'in PMID/.', '--articles')
-        self._opcao(b, 4, 'Open the viewer when done', 'viewer', 'Streamlit, in the browser; Stop closes it.',
-                    '--viewer')
+        self._opcao(b, 0, 'Treat singular and plural as one word', 'lemma', 'viruses and virus count together.',
+                    '--lemma')
+        self._opcao(b, 2, 'Also save one folder per article', 'articles', 'Each article with its words and all '
+                    'its fields.', '--articles')
+        self._opcao(b, 4, 'Open the interactive viewer at the end', 'viewer', 'Opens in the browser; Stop closes '
+                    'it.', '--viewer')
+
+        b = self._secao(p, 'Report')
+        self._opcao(b, 0, 'Write the report', 'relatorio', 'Word network you can explore in the browser, trends '
+                    'per year, PRISMA diagram and methods text, in a folder ending in _report.', '--report')
+        self._opcao(b, 2, 'Methods text also in Portuguese', 'relatorio_pt', '', '--report-pt')
+        self._campo(b, 4, 'Network: pairs seen at least', 'rede_min', 'times side by side (3 by default). '
+                    'Raise it when the network is crowded.', '--net-min', largura=8)
+        self._campo(b, 6, 'Network: at most', 'rede_max', 'words (300 by default).', '--net-max-nodes', largura=8)
+        self._opcao(b, 8, 'Keep common words of scientific writing (study, results, using…)', 'rede_genericas', '',
+                    '--net-keep-generic')
+        botoes = tk.Frame(b, bg=COR['superficie'])
+        botoes.grid(row=10, column=0, columnspan=2, sticky='w', pady=(4, 0))
+        ttk.Button(botoes, text='Open the network', command=lambda: self._abrir_relatorio('network.html')).pack(
+            side='left', padx=(0, 6))
+        ttk.Button(botoes, text='Open the report folder', command=lambda: self._abrir_relatorio('')).pack(side='left')
 
     def _pagina_preencher(self, p):
         self._titulo(p, 'Fill abstracts of a file',
-                     'For a single file outside a merge. Inside the pipeline, use the option in steps 1 and 2: '
-                     'it also gives the PRISMA table.')
+                     'For one file on its own. In steps 1 and 2 the same option fills the merged file and also '
+                     'gives the PRISMA table.')
         b = self._secao(p, 'File')
-        self._campo(b, 0, 'File', 'arquivo_preencher', 'PubMed, Web of Science or Scopus export, or a merged file.',
+        self._campo(b, 0, 'File', 'arquivo_preencher', 'Exported from PubMed, Web of Science or Scopus, or merged.',
                     '--fill-abstracts FILE', largura=56, arquivo=[('Exports', '*.txt *.csv *.ris')])
-        self._campo(b, 2, 'Output', 'fill_out', 'Optional; default <file>_filled.txt', '--fill-out', largura=40)
-        self._campo(b, 4, 'E-mail', 'email', 'For the PubMed step.', '--email', largura=40)
-        self._opcao(b, 6, 'Keep records without abstract in the output', 'manter_sem_resumo', '',
+        self._campo(b, 2, 'Name', 'fill_out', 'Optional. Default: <file>_filled.txt', '--fill-out', largura=40)
+        self._campo(b, 4, 'Your e-mail', 'email', 'Asked by PubMed.', '--email', largura=40)
+        self._opcao(b, 6, 'Keep articles without abstract in the result', 'manter_sem_resumo', '',
                     '--keep-no-abstract')
 
     def _pagina_chaves(self, p):
         self._titulo(p, 'API keys',
-                     'Keys typed here are saved in ~/.jurumim_keys.json (readable by you only) and used by the '
-                     'interface and by the terminal tool. They are passed to the tool as environment variables, '
-                     'never in the command line.')
+                     'Keys are saved on this computer, readable only by you, and used by every step, by the '
+                     'terminal tool and by an AI assistant, which never sees them.')
         b = self._secao(p, 'Saved now')
         self.rotulo_salvas = tk.Label(b, text='', font=self.f['mono'], bg=COR['superficie'], fg=COR['tinta'],
                                       justify='left')
         self.rotulo_salvas.grid(row=0, column=0, columnspan=2, sticky='w')
-        b = self._secao(p, 'Optional keys for filling abstracts')
+        self._dica(b, 'Web of Science and Scopus keys are typed in step 1, with "Remember the keys".', None, 1,
+                   coluna=0).grid(columnspan=2)
+        b = self._secao(p, 'Optional keys for finding abstracts')
         self._campo(b, 0, 'Semantic Scholar', 's2_apikey', 'Free; only speeds up large reviews.', 'S2_API_KEY',
                     secreto=True, largura=40)
         self._campo(b, 2, 'OpenAlex', 'openalex_apikey', 'Free; only for large reviews.', 'OPENALEX_API_KEY',
@@ -629,34 +711,255 @@ class App:
         ttk.Button(botoes, text='Forget all saved keys', command=self._esquecer_chaves).pack(side='left')
         self._atualizar_salvas()
 
-    # ------------------------------------------------------------------ dock: command + log
+    # ------------------------------------------------------------------ AI assistant page
+    PEDIDO_ANTES = ('Use the jurumim-review skill to plan a systematic review about <your topic>. '
+                    'Ask me what you need, show me the commands, then run them.')
+    PEDIDO_DEPOIS = ('Use the jurumim-review skill: read the context folder of results/<your topic> and suggest '
+                     'include, exclude or maybe for the articles not yet screened. My criteria are: <...>')
+
+    def _pagina_ia(self, p):
+        self._titulo(p, 'AI assistant',
+                     'Claude or Gemini can help at two moments. Before the search, the assistant plans it with you '
+                     'and runs Jurumim. After the analysis, it reads your results, answers questions citing the '
+                     'articles and suggests include, exclude or maybe for each one. It only suggests: you decide.')
+
+        b = self._secao(p, '1  Choose your assistant (once)')
+        self._radios(b, 0, '', 'ia_onde', [('claude_code', 'Claude Code'), ('gemini', 'Gemini CLI or Antigravity'),
+                                           ('web', 'claude.ai or Gemini app (browser)')])
+        self.paineis_ia = {}
+        caixa = tk.Frame(b, bg=COR['superficie'])
+        caixa.grid(row=2, column=0, columnspan=2, sticky='we')
+        instalacao = {n: (g, l) for n, g, l in C.comandos_instalacao()}
+
+        q = self._painel_ia(caixa, 'claude_code')
+        self._paragrafo(q, 0, 'Claude Code works in a terminal and can run Jurumim for you. Install it '
+                              '(claude.com/claude-code), then run one of these pairs once, in a terminal:')
+        self._linhas_copiaveis(q, 1, 'From the internet', instalacao['Claude Code'][0])
+        self._linhas_copiaveis(q, 2, 'From this computer', instalacao['Claude Code'][1])
+        self._paragrafo(q, 3, NOTA_INSTALACAO + ' Then open Claude Code in the folder where you keep your '
+                              'reviews and ask, in your own words, as in the examples below.', cor=COR['suave'])
+
+        q = self._painel_ia(caixa, 'gemini')
+        self._paragrafo(q, 0, 'Gemini CLI and Antigravity CLI work in a terminal and can run Jurumim for you. '
+                              'Run the command of the one you have, once:')
+        self._linhas_copiaveis(q, 1, 'Gemini CLI, from the internet', instalacao['Gemini CLI'][0])
+        self._linhas_copiaveis(q, 2, 'Gemini CLI, from this computer', instalacao['Gemini CLI'][1])
+        self._linhas_copiaveis(q, 3, 'Antigravity, from the internet', instalacao['Antigravity CLI'][0])
+        self._linhas_copiaveis(q, 4, 'Antigravity, from this computer', instalacao['Antigravity CLI'][1])
+        self._paragrafo(q, 5, NOTA_INSTALACAO + ' Then open it in the folder where you keep your reviews and ask as '
+                              'in the examples below.', cor=COR['suave'])
+
+        q = self._painel_ia(caixa, 'web')
+        self._paragrafo(q, 0, 'In the browser the assistant cannot run Jurumim: it tells you what to do here and '
+                              'reads the files you upload (step 3 below).')
+        self._paragrafo(q, 1, 'claude.ai: create the skill file, upload it in Settings, Skills, and for each '
+                              'review create a project with the files of step 3.\nGemini app: copy the '
+                              'instructions, create a Gem, paste them, and add the files of step 3.',
+                        cor=COR['suave'])
+        botoes = tk.Frame(q, bg=COR['superficie'])
+        botoes.grid(row=2, column=0, columnspan=2, sticky='w', pady=(0, 6))
+        ttk.Button(botoes, text='Create the skill file (zip)', command=self._zip_skill).pack(side='left',
+                                                                                            padx=(0, 6))
+        ttk.Button(botoes, text='Copy the Gem instructions', command=self._copiar_gem).pack(side='left')
+        self.v['ia_onde'].trace_add('write', lambda *a: self._mostrar_painel_ia())
+        self._mostrar_painel_ia()
+
+        b = self._secao(p, '2  Before the search: plan and run with the assistant')
+        self._paragrafo(b, 0, 'Save your database keys first (step 1, "Remember the keys", or page API keys): the '
+                              'assistant uses them without ever seeing them. Then ask, for example:',
+                        cor=COR['suave'])
+        self._linhas_copiaveis(b, 1, 'Example', [self.PEDIDO_ANTES], quebrar=True)
+        self._paragrafo(b, 2, 'It asks about the topic, the databases and your criteria, shows each command before '
+                              'running it, and writes everything into results/<topic>, the same folders this window '
+                              'uses.', cor=COR['suave'])
+
+        b = self._secao(p, '3  After the analysis: prepare the files for the assistant')
+        self._paragrafo(b, 0, 'Writes a folder with your articles, abstracts, word network and trends in a form the '
+                              'assistant can read, plus a list of the articles still to screen. Uses the articles '
+                              'and options of step 4, and also writes the report.', cor=COR['suave'])
+        self._campo(b, 1, 'Articles', 'entrada', '', 'input.txt', largura=56, arquivo=[('MEDLINE', '*.txt')])
+        botoes = tk.Frame(b, bg=COR['superficie'])
+        botoes.grid(row=3, column=0, columnspan=2, sticky='w', pady=(0, 6))
+        ttk.Button(botoes, text='Prepare the files', style='Primario.TButton',
+                   command=lambda: self._rodar_ia('contexto')).pack(side='left', padx=(0, 6))
+        ttk.Button(botoes, text="Open the assistant's files", command=lambda: self._abrir_relatorio('context')).pack(
+            side='left')
+        self._linhas_copiaveis(b, 4, 'Then ask', [self.PEDIDO_DEPOIS], quebrar=True)
+
+        b = self._secao(p, '4  Bring the suggestions back')
+        self._paragrafo(b, 0, 'The assistant writes a table (ai_suggestions.csv) with include, exclude or maybe, the '
+                              'reason and a quote of the abstract for each article. Load it here: it goes into its '
+                              'own columns of the PRISMA table, next to yours.', cor=COR['suave'])
+        self._campo(b, 1, 'Suggestions file', 'csv_ia', 'Picked up when it is in the topic folder.',
+                    '--import-suggestions CSV', largura=44, arquivo=[('CSV', '*.csv')])
+        self._campo(b, 3, 'PRISMA table', 'prisma', '', 'PRISMA.xlsx', largura=44, arquivo=[('Excel', '*.xlsx')])
+        self._campo(b, 5, 'Model name', 'modelo_ia', 'Optional, when the file does not say which model wrote it.',
+                    '--ai-model', largura=24)
+        ttk.Button(b, text='Load the suggestions', style='Primario.TButton',
+                   command=lambda: self._rodar_ia('importar')).grid(row=7, column=0, columnspan=2, sticky='w',
+                                                                     pady=(0, 8))
+
+    def _rodar_ia(self, acao):
+        """Buttons of steps 3 and 4: choose the action, then run it (the Run button below does the same)."""
+        self.v['acao_ia'].set(acao)
+        r = self._comando_atual()
+        if r and r[2]:
+            self.estado_rot.configure(text='To continue: ' + self.t('  ·  ').join(r[2]), fg=COR['alerta'])
+            return
+        self.rodar()
+
+    def _painel_ia(self, caixa, nome):
+        q = tk.Frame(caixa, bg=COR['superficie'])
+        q.columnconfigure(1, weight=1)
+        self.paineis_ia[nome] = q
+        return q
+
+    def _mostrar_painel_ia(self):
+        escolhido = self.v['ia_onde'].get()
+        for nome, q in self.paineis_ia.items():
+            if nome == escolhido:
+                q.pack(fill='x', pady=(4, 0))
+            else:
+                q.pack_forget()
+
+    def _zip_skill(self):
+        import shutil
+        self.pasta().mkdir(parents=True, exist_ok=True)
+        destino = shutil.make_archive(str(self.pasta() / 'jurumim-review'), 'zip', root_dir=str(C.SKILL.parent),
+                                      base_dir=C.SKILL.name)
+        self._escrever(f"Skill file for claude.ai: {destino}\n", 'ok')
+        self.estado_rot.configure(text='Skill file saved in the topic folder.', fg=COR['folha'])
+        self._abrir(self.pasta())
+
+    def _linhas_copiaveis(self, pai, linha, rotulo, comandos, quebrar=False):
+        tk.Label(pai, text=rotulo, font=self.f['corpo'], bg=COR['superficie'], fg=COR['tinta']).grid(
+            row=linha, column=0, sticky='nw', padx=(0, 14), pady=(5, 0))
+        quadro = tk.Frame(pai, bg=COR['superficie'])
+        quadro.grid(row=linha, column=1, sticky='we', pady=(2, 6))
+        texto = '\n'.join(comandos)
+        if quebrar:
+            largura, altura = 72, sum(len(c) // 70 + 1 for c in comandos)
+        else:
+            largura, altura = min(96, max(len(c) for c in comandos) + 1), len(comandos)
+        caixa = tk.Text(quadro, height=altura, width=largura, font=self.f['mono'], relief='flat',
+                        wrap='word' if quebrar else 'none', highlightthickness=1, highlightbackground=COR['linha'],
+                        bg=COR['fundo'], fg=COR['tinta'], padx=6, pady=4)
+        caixa.insert('1.0', texto)
+        caixa.configure(state='disabled')
+        caixa.pack(side='left')
+        ttk.Button(quadro, text='Copy', command=lambda: self._para_area(texto, 'Copied: ' + texto.replace('\n', '  then  ')[:110])).pack(
+            side='left', padx=(6, 0), anchor='n')
+
+    def _para_area(self, texto, aviso):
+        if NO_WSL and shutil.which('clip.exe'):
+            # On WSL the window's own clipboard does not reliably reach Windows, and claiming it while
+            # Windows is being written makes the two clipboards fight. So the text goes only to the
+            # Windows clipboard (WSL copies it back to Linux), in a thread so the window never waits.
+            def escrever():
+                try:
+                    subprocess.run(['clip.exe'], input=texto.encode('utf-16-le'), timeout=10,
+                                   stdin=None, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   start_new_session=True)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+            threading.Thread(target=escrever, daemon=True).start()
+        else:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(texto)
+        self.estado_rot.configure(text=aviso, fg=COR['suave'])
+
+    def _copiar_gem(self):
+        texto = C.instrucoes_gem()
+        if texto:
+            self._para_area(texto, 'Gem instructions copied: paste them in a new Gem.')
+        else:
+            self.estado_rot.configure(text='skills/jurumim-review/references/web.md not found.', fg=COR['erro'])
+
+    # ------------------------------------------------------------------ help page
+    AJUDA = [
+        ('How a review works here', [
+            '1  Search databases, or 2  Merge files you exported from the websites. Either way you get one file '
+            'with every article once, and a PRISMA table (Excel).',
+            '3  Screen: in the PRISMA table, write include, exclude or maybe for each article (column '
+            'screening_decision), save, and keep the chosen ones. The flow at the top of the page shows where '
+            'you are.',
+            '4  Analyse: word tables and, with the report, the word network, the trends, the PRISMA diagram '
+            'and a methods text.',
+            'Each review has its own folder: the TOPIC box at the top. Everything is saved there, and each '
+            'step picks up the files of the step before.']),
+        ('Keys for the databases', [
+            'PubMed: no key, only your e-mail.',
+            'Web of Science: a key from developer.clarivate.com. Institutional (Expanded) keys bring abstracts; '
+            'the free Starter key brings titles only.',
+            'Scopus: a free key from dev.elsevier.com. From the institution network (or with an institutional '
+            'token) it brings abstracts; from elsewhere, titles only.',
+            'Keys are saved on this computer, readable only by you, and never shown in full.']),
+        ('Articles without abstract', [
+            'Words are counted in titles and abstracts, so articles without an abstract are set aside and '
+            'marked "exclude" in the PRISMA table. "Look for missing abstracts" finds many of them in '
+            'PubMed, Crossref, Semantic Scholar and OpenAlex (English abstracts only). If you change one to '
+            'include, it comes back.']),
+        ('Suggestions', [
+            'Rules (page 3) and an AI assistant (page AI assistant) can suggest include, exclude or maybe. '
+            'Suggestions go to their own columns (rules_… and ai_…) and never change screening_decision: '
+            'the decisions are always yours. Rule words are looked for in the title and the abstract.']),
+        ('Reading the report', [
+            'Word network (network.html): each circle is a word, larger when it is more frequent; a line joins '
+            'two words written side by side in titles and abstracts, thicker when it happens more often. Colours '
+            'group words that appear together. Click a word to see its neighbours and its articles. The network '
+            'shows how the literature is written, not what the studies found.',
+            'Trends (trends.png): the share of each year\'s articles that mention each word.',
+            'PRISMA diagram: the counts of identification and screening; the full-text boxes show "…" for you '
+            'to complete.',
+            'Methods text: the search, duplicates, abstracts and screening with your numbers; parts in '
+            '[brackets] are for you to complete.']),
+        ('Words used here', [
+            'PRISMA: the usual way of reporting how articles were found and selected in a systematic review.',
+            'PRISMA table: the Excel file ending in _prisma.xlsx, one row per article, where you screen.',
+            'MEDLINE: the PubMed text format; Web of Science and Scopus records are converted to it.',
+            'Words to ignore (stopwords): very common words (the, of, and) left out of the counts.']),
+        ('The terminal', [
+            'Every button runs Jurumim_Revisor.py. "Show terminal commands" (bottom right) shows the exact '
+            'command and the option names next to each field, to repeat a step in a terminal or in a script.']),
+    ]
+
+    def _pagina_ajuda(self, p):
+        self._titulo(p, 'Help', 'What each step does and what the results mean.')
+        for titulo, paragrafos in self.AJUDA:
+            b = self._secao(p, titulo)
+            for k, texto in enumerate(paragrafos):
+                self._paragrafo(b, k, texto)
+
+    # ------------------------------------------------------------------ dock: progress + run
     def _doca(self):
         doca = tk.Frame(self.root, bg=COR['fundo'])
         doca.pack(fill='x', padx=16, pady=(0, 12))
-        linha = tk.Frame(doca, bg=COR['fundo'])
-        linha.pack(fill='x')
-        tk.Label(linha, text='TERMINAL COMMAND', font=self.f['secao'], bg=COR['fundo'], fg=COR['suave']).pack(
-            side='left')
-        ttk.Button(linha, text='Copy', command=self._copiar).pack(side='right')
+        self.linha_comando = tk.Frame(doca, bg=COR['fundo'])
+        tk.Label(self.linha_comando, text='TERMINAL COMMAND', font=self.f['secao'], bg=COR['fundo'],
+                 fg=COR['suave']).pack(side='left')
+        ttk.Button(self.linha_comando, text='Copy', command=self._copiar).pack(side='right')
         self.comando = tk.Text(doca, height=2, font=self.f['mono'], relief='flat', wrap='char', bg=COR['superficie'],
                                fg=COR['tinta'], highlightthickness=1, highlightbackground=COR['linha'], padx=8, pady=6)
-        self.comando.pack(fill='x', pady=(4, 8))
         self.comando.configure(state='disabled')
 
-        acoes = tk.Frame(doca, bg=COR['fundo'])
+        self.acoes = acoes = tk.Frame(doca, bg=COR['fundo'])
         acoes.pack(fill='x')
         self.estado_rot = tk.Label(acoes, text='', font=self.f['corpo'], bg=COR['fundo'], fg=COR['suave'],
-                                   anchor='w', justify='left', wraplength=700)
+                                   anchor='w', justify='left', wraplength=620)
         self.estado_rot.pack(side='left', fill='x', expand=True)
         self.botao_rodar = ttk.Button(acoes, text='Run', style='Primario.TButton', command=self.rodar)
         self.botao_rodar.pack(side='right')
         self.botao_parar = ttk.Button(acoes, text='Stop', style='Parar.TButton', command=self.parar, state='disabled')
         self.botao_parar.pack(side='right', padx=(0, 8))
         self.botao_proximo = ttk.Button(acoes, text='', command=lambda: None)
+        ttk.Checkbutton(acoes, text='Show terminal commands', variable=self.v['avancado'],
+                        command=self._alternar_avancado, style='Doca.TCheckbutton').pack(side='right', padx=(0, 14))
 
+        tk.Label(doca, text='PROGRESS', font=self.f['secao'], bg=COR['fundo'], fg=COR['suave']).pack(
+            anchor='w', pady=(8, 2))
         quadro_log = tk.Frame(doca, bg=COR['superficie'], highlightthickness=1, highlightbackground=COR['linha'])
-        quadro_log.pack(fill='x', pady=(8, 0))
-        self.log = tk.Text(quadro_log, height=7, font=self.f['mono'], relief='flat', wrap='word',
+        quadro_log.pack(fill='x')
+        self.log = tk.Text(quadro_log, height=6, font=self.f['mono'], relief='flat', wrap='word',
                            bg=COR['superficie'], fg=COR['tinta'], padx=8, pady=6)
         barra = ttk.Scrollbar(quadro_log, orient='vertical', command=self.log.yview)
         self.log.configure(yscrollcommand=barra.set, state='disabled')
@@ -666,7 +969,24 @@ class App:
                          ('cmd', COR['rio']), ('suave', COR['suave'])):
             self.log.tag_configure(tag, foreground=cor)
         self.log.tag_configure('forte', font=self.f['mono'] + ('bold',))
-        self._escrever('Output of each run appears here.\n', 'suave')
+        self._escrever('What each step does appears here while it runs. New here? Start with Help, on the left.\n',
+                       'suave')
+        self._alternar_avancado()
+
+    def _alternar_avancado(self):
+        """Terminal command box and option names next to the fields: hidden unless asked for."""
+        ver = self.v['avancado'].get()
+        if ver:
+            self.linha_comando.pack(fill='x', before=self.acoes)
+            self.comando.pack(fill='x', pady=(4, 8), before=self.acoes)
+        else:
+            self.linha_comando.pack_forget()
+            self.comando.pack_forget()
+        for rotulo, texto in self.rotulos_flag:
+            if ver:
+                rotulo.pack(side='left', padx=(0, 6), **({'before': texto} if texto else {}))
+            else:
+                rotulo.pack_forget()
 
     # ------------------------------------------------------------------ command building
     def _comando_atual(self):
@@ -676,9 +996,11 @@ class App:
         if self.pagina == 'merge':
             return C.comando_merge(e)
         if self.pagina == 'screen':
-            return C.comando_triagem(e)
+            return C.comando_tela_triagem(e)
         if self.pagina == 'analyse':
-            return C.comando_analise(e)
+            return C.comando_analise(dict(e, contexto=False))
+        if self.pagina == 'ai':
+            return C.comando_ia(e)
         if self.pagina == 'fill':
             return C.comando_preencher(e)
         return None
@@ -698,7 +1020,9 @@ class App:
             self.caixa_termos.configure(state='normal' if modo == 'search' else 'disabled',
                                         bg=COR['superficie'] if modo == 'search' else COR['fundo'])
         r = self._comando_atual()
-        texto = 'Keys are saved on this page; nothing to run.' if r is None else C.texto_comando(r[0])
+        vazio = {'keys': 'Keys are saved on this page; nothing to run.'}.get(self.pagina, 'Nothing to run on this page.')
+        texto = vazio if r is None else C.texto_comando(r[0])
+        self.botao_rodar.configure(text=self._rotulo_rodar())
         self.comando.configure(state='normal')
         self.comando.delete('1.0', 'end')
         self.comando.insert('1.0', texto)
@@ -710,11 +1034,20 @@ class App:
             self.estado_rot.configure(text='', fg=COR['suave'])
         elif r[2]:
             self.botao_rodar.state(['disabled'])
-            self.estado_rot.configure(text=self.t('  ·  ').join(r[2]), fg=COR['erro'])
+            self.estado_rot.configure(text='To continue: ' + self.t('  ·  ').join(r[2]), fg=COR['alerta'])
         else:
             self.botao_rodar.state(['!disabled'])
             self.estado_rot.configure(text=f'Ready. Output goes to the topic folder "{self.pasta().name}".',
                                       fg=COR['suave'])
+
+    def _rotulo_rodar(self):
+        """The Run button says what it will do."""
+        if self.pagina == 'screen':
+            return 'Get suggestions' if self.v['acao_triagem'].get() == 'suggest' else 'Keep chosen articles'
+        if self.pagina == 'ai':
+            return 'Prepare the files' if self.v['acao_ia'].get() == 'contexto' else 'Load the suggestions'
+        return {'search': 'Search', 'merge': 'Merge', 'analyse': 'Analyse', 'fill': 'Fill abstracts'}.get(
+            self.pagina, 'Run')
 
     # ------------------------------------------------------------------ running
     def rodar(self):
@@ -788,7 +1121,7 @@ class App:
         if baixo.startswith('warning') or 'incomplete' in baixo or baixo.startswith('note:'):
             return 'aviso'
         if baixo.startswith(('saved:', 'prisma table:', 'frequency table', 'word search written',
-                             'grouped frequency', 'kept (')):
+                             'grouped frequency', 'kept (', 'suggestions for', 'ai suggestions for')):
             return 'ok'
         return None
 
@@ -814,6 +1147,14 @@ class App:
                    'screen': ('analyse', 'Next: 4 Analyse')}.get(getattr(self, 'pagina_rodando', ''))
         if codigo in (0, 1) and proximo:
             self.botao_proximo.configure(text=proximo[1], command=lambda n=proximo[0]: self.mostrar(n))
+            self.botao_proximo.pack(side='right', padx=(0, 8))
+        elif codigo == 0 and getattr(self, 'pagina_rodando', '') == 'analyse' and self.v['relatorio'].get():
+            self.botao_proximo.configure(text='Open the network',
+                                         command=lambda: self._abrir_relatorio('network.html'))
+            self.botao_proximo.pack(side='right', padx=(0, 8))
+        elif codigo == 0 and getattr(self, 'pagina_rodando', '') == 'ai' and self.v['acao_ia'].get() == 'contexto':
+            self.botao_proximo.configure(text="Open the assistant's files",
+                                         command=lambda: self._abrir_relatorio('context'))
             self.botao_proximo.pack(side='right', padx=(0, 8))
 
     def parar(self):
@@ -844,9 +1185,7 @@ class App:
         self.log.configure(state='disabled')
 
     def _copiar(self):
-        self.root.clipboard_clear()
-        self.root.clipboard_append(self.comando.get('1.0', 'end').strip())
-        self.estado_rot.configure(text='Command copied.', fg=COR['suave'])
+        self._para_area(self.comando.get('1.0', 'end').strip(), 'Command copied.')
 
     # ------------------------------------------------------------------ files
     def _escolher_pasta(self):
@@ -868,6 +1207,24 @@ class App:
             return
         if not abrir_no_sistema(caminho):
             self.estado_rot.configure(text=f'Could not open {caminho}', fg=COR['erro'])
+
+    def _abrir_relatorio(self, nome):
+        pasta = C.pasta_relatorio(self.estado(), self.pasta())
+        if pasta is None:
+            self.estado_rot.configure(text='Choose the input file of step 4 first.', fg=COR['erro'])
+            return
+        self._abrir(pasta / nome if nome else pasta)
+
+    def _novo_criterios(self):
+        """Write the empty criteria file into the topic folder (kept if it exists) and open it."""
+        from databases.sugestoes import MODELO_CRITERIOS
+        destino = self.pasta() / 'screening_criteria.txt'
+        if not destino.exists():
+            self.pasta().mkdir(parents=True, exist_ok=True)
+            destino.write_text(MODELO_CRITERIOS, encoding='utf-8')
+            self._escrever(f"Criteria file to fill in: {destino}\n", 'ok')
+        self.v['criterios'].set(str(destino))
+        self._abrir(destino)
 
     def _adicionar_arquivos(self):
         inicial = self.pasta() if self.pasta().is_dir() else C.RAIZ
@@ -909,6 +1266,9 @@ class App:
             self.v['mesclado'].set(achado['mesclado'])
             self.v['prisma'].set(achado['prisma'])
             self.v['entrada'].set(achado.get('triado') or achado['mesclado'])
+        csv_ia = self.pasta() / 'ai_suggestions.csv'
+        if csv_ia.is_file() and not self.v['csv_ia'].get():
+            self.v['csv_ia'].set(str(csv_ia))
         if not self.v['merge_out'].get():
             nome = Path(self.v['topico'].get() or 'records').name
             self.v['merge_out'].set(f"Merged_{nome}.txt")
@@ -920,6 +1280,7 @@ class App:
         c = self.prisma_canvas
         c.delete('all')
         caminho = self.v['prisma'].get()
+        self.rotulo_sugestoes.configure(text=self._texto_sugestoes(caminho))
         if not caminho or not Path(caminho).is_file():
             c.create_text(4, 20, anchor='w', font=self.f['corpo'], fill=COR['suave'],
                           text='No PRISMA table in this topic yet: run step 1 or step 2 first.')
@@ -955,6 +1316,23 @@ class App:
         if r['pendentes']:
             caixa(380, 168, 300, 66, 'Not yet screened', r['pendentes'], 'fill in screening_decision',
                   cor=COR['alerta'])
+
+    @staticmethod
+    def _texto_sugestoes(caminho):
+        """One line with the suggestions in the table: they do not change the counts above."""
+        try:
+            s = C.resumo_sugestoes(caminho)
+        except Exception:
+            return ''
+        partes = []
+        for chave, nome in (('rules', 'Suggestions from rules'), ('ai', 'AI suggestions')):
+            if s.get(chave):
+                partes.append(nome + ': ' + ', '.join(f"{s[chave].get(d, 0):,} {d}" for d in ('exclude', 'maybe', 'include')))
+        if not partes:
+            return ''
+        return ('  ·  '.join(partes) + '. They are in their own columns of the PRISMA table (rules_suggestion, '
+                'ai_suggestion) and do not change the counts above: the counts follow screening_decision, which '
+                'only you fill in.')
 
     # ------------------------------------------------------------------ keys
     def _atualizar_salvas(self):

@@ -9,6 +9,8 @@
 
 Auxiliary software for systematic reviews and literature analysis. It reads PubMed exports (MEDLINE format), as well as Web of Science and Scopus records converted to the same format, counts terms in titles and abstracts, and writes Excel tables. A Streamlit viewer shows the results by word, author and article.
 
+With `--report` it also writes an interactive word co-occurrence network, trends per year, the PRISMA 2020 flow diagram and a methods text. Screening can be pre-sorted by default and custom criteria (`--suggest`) or by an AI assistant (Claude or Gemini, through the `jurumim-review` skill), whose suggestions go to their own columns; the decisions stay with the reviewers.
+
 It was built for the sand fly literature (*Lutzomyia* / *Nyssomyia*), but works with any PubMed query.
 
 ---
@@ -37,6 +39,7 @@ python3 Jurumim_Revisor.py --merge Pubmed_Nyssomyia.txt savedrecs.txt scopus.csv
 # fill in screening_decision in Nyssomyia_all_prisma.xlsx, then:
 python3 Jurumim_Revisor.py --screen Nyssomyia_all.txt Nyssomyia_all_prisma.xlsx
 python3 Jurumim_Revisor.py Nyssomyia_all_screened.txt general.xlsx --viewer
+python3 Jurumim_Revisor.py Nyssomyia_all_screened.txt general.xlsx --report   # network, trends, PRISMA diagram, methods
 ```
 
 `python3 initialize.py` opens the [desktop app](#desktop-app), which runs the same commands from a window.
@@ -282,10 +285,12 @@ python3 Jurumim_Revisor.py -p -q "Nyssomyia" --db all --wos-api starter --scopus
 
 #### Step 3: screen
 
-1. Open `Nyssomyia_all_prisma.xlsx`, sheet `records`, and fill in `screening_decision` (include / exclude / maybe) and, if you want, `exclusion_reason`. The `summary` sheet follows your changes.
-2. Keep only the records you chose:
+1. Optionally, pre-sort the records with [screening suggestions](#screening-suggestions---suggest---import-suggestions): default criteria plus your own, or the CSV of an AI assistant. They fill their own columns.
+2. Open `Nyssomyia_all_prisma.xlsx`, sheet `records`, and fill in `screening_decision` (include / exclude / maybe) and, if you want, `exclusion_reason`. The `summary` sheet follows your changes.
+3. Keep only the records you chose:
 
 ```bash
+python3 Jurumim_Revisor.py --suggest Nyssomyia_all.txt Nyssomyia_all_prisma.xlsx --include-terms Nyssomyia Lutzomyia --years 2000-
 python3 Jurumim_Revisor.py --screen Nyssomyia_all.txt Nyssomyia_all_prisma.xlsx
 # -> Nyssomyia_all_screened.txt (include only)
 
@@ -304,7 +309,11 @@ python3 Jurumim_Revisor.py Nyssomyia_all_screened.txt search.xlsx --ws "sand fli
 python3 Jurumim_Revisor.py Nyssomyia_all_screened.txt general.xlsx -sw study results
 python3 Jurumim_Revisor.py Nyssomyia_all_screened.txt --articles
 python3 Jurumim_Revisor.py Nyssomyia_all_screened.txt general.xlsx --viewer
+python3 Jurumim_Revisor.py Nyssomyia_all_screened.txt general.xlsx --report --report-pt
+python3 Jurumim_Revisor.py Nyssomyia_all_screened.txt general.xlsx --context --net-min 5
 ```
+
+`--report` and `--context` are described in [Report](#report---report) and [AI assistant](#ai-assistant---context-and-the-jurumim-review-skill).
 
 #### Files written at each step
 
@@ -315,9 +324,13 @@ python3 Jurumim_Revisor.py Nyssomyia_all_screened.txt general.xlsx --viewer
 | `--merge`, or `-p --db` with anything other than PubMed alone | `<out>.txt` / `Merged_<query>.txt` | One MEDLINE file without duplicates, with `DB`, `UT`, `TC`, `EID`, `TCSC` lines |
 | | `<out>_no_abstract.txt` | Records still without abstract: not analysed, marked excluded in the PRISMA table (not written with `--keep-no-abstract`) |
 | | `<out>_prisma.xlsx` | Sheets `summary`, `records`, `duplicates_removed` |
+| | `<out>_search_log.json` | Databases, queries, dates, kind of key and counts of the merge, read by the methods text of `--report` |
+| `--suggest` / `--import-suggestions` | `<out>_prisma.xlsx` | Adds the `rules_*` / `ai_*` columns to the `records` sheet |
 | `--fill-abstracts FILE` | `<FILE>_filled.txt` (+ `<FILE>_filled_no_abstract.txt`) | The same records with the missing abstracts filled in (`AB`, and `ABS` for the source); the input file is not changed |
 | `--screen` | `<out>_screened.txt` | Only the records kept, unchanged |
 | analysis | `general.xlsx`... | The usual tables, plus one `articles_<database>` column per database for a merged input |
+| `--report` | `<input>_report/` | Network, trends, PRISMA 2020 diagram, methods text (see [Report](#report---report)) |
+| `--context` | `<input>_report/context/` | Files for an AI assistant (see [AI assistant](#ai-assistant---context-and-the-jurumim-review-skill)) |
 
 #### What each database needs
 
@@ -425,6 +438,11 @@ On the next run the saved values are used without asking (`Using saved Web of Sc
 
 - The keys file can only be read by its owner (permissions `600`, like `~/.netrc`), and keys are always shown masked.
 - `--show-keys` shows what is saved, masked; `--forget-keys` deletes the file.
+- `--set-keys` asks for the e-mail and keys and saves them, without running a search: `--set-keys` alone asks for all three databases, `--set-keys wos scopus` only for those. Enter keeps the value already saved. It is the way to give keys to the tool before an AI assistant runs the commands, so the keys never go through the chat:
+
+```bash
+python3 Jurumim_Revisor.py --set-keys wos scopus
+```
 - With `--no-prompt` nothing is asked, and a missing value stops the run with an error that names it. Nothing is asked either when there is no terminal (scripts, servers, piped input). In those cases, pass the values as flags or environment variables:
 
 ```bash
@@ -457,6 +475,14 @@ A variable set with `export` lasts until the terminal is closed and does not go 
 | `--outdir DIR` | Write all files of the run into `DIR`, for example one folder per topic. Inputs are looked up where you run the command, then in `DIR` |
 | `--no-prompt` | Never ask for a missing e-mail or key |
 | `--show-keys` / `--forget-keys` | Show (masked) or delete the saved e-mail and keys |
+| `--set-keys [DB...]` | Type and save the e-mail and keys of these databases (`pubmed`, `wos`, `scopus`, `all`; default all) without a search |
+| `--suggest MERGED.txt PRISMA.xlsx` | Screening suggestions from criteria (see [Screening suggestions](#screening-suggestions---suggest---import-suggestions)) |
+| `--criteria FILE` / `--criteria-template [FILE]` | Criteria file for `--suggest` / write an empty one (default `screening_criteria.txt`) |
+| `--include-terms T...` / `--exclude-terms T...` / `--years FROM-TO` | Criteria for `--suggest` given as flags |
+| `--import-suggestions CSV PRISMA.xlsx` / `--ai-model NAME` | Copy an AI assistant's suggestions to the `ai_*` columns |
+| `--report` / `--report-pt` | Network, trends, PRISMA diagram and methods text in `<input>_report/` / also the methods text in Portuguese (see [Report](#report---report)) |
+| `--context` | `--report` plus `<input>_report/context/` for an AI assistant |
+| `--net-min N` / `--net-max-nodes N` / `--net-keep-generic` | Network: minimum times two words appear side by side (default 3), most frequent linked words kept (default 300), keep generic words |
 
 WoS and Scopus do not understand PubMed field tags such as `[tiab]`. A warning is printed when `-q` contains them; use `--wos-query` and `--scopus-query` to give each database its own query.
 
@@ -484,6 +510,10 @@ Written next to the merged file by `--merge` and by `-p --db`:
 | `records` | One row per unique article: `record_id` (the `PMID-` line of the merged file), `pmid` (empty when the article is not in PubMed/MEDLINE), `wos_ut` (empty when not in WoS), `scopus_eid` (empty when not in Scopus), `doi`, `in_pubmed`, `in_wos`, `in_scopus`, `databases`, `title`, `first_author`, `year`, `journal`, `document_type`, `has_abstract`, `abstract_source` (empty when the abstract came with the record, `<database> (duplicate record)` when it came from a removed copy, otherwise the source used by `--fill-abstracts`), `times_cited_wos`, `times_cited_scopus`, and the columns you fill in: `screening_decision` (list: include / exclude / maybe), `exclusion_reason`, `notes`. Records without abstract already have `exclude` / `No abstract available`; the others are empty |
 | `duplicates_removed` | Every record removed as a duplicate: its source and ID, the record kept, the key that matched, the title and both DOIs |
 
+`--suggest` and `--import-suggestions` add their columns after `notes`, so the formulas of `summary` keep pointing at the same cells.
+
+The merge also writes `<output>_search_log.json`: for each source, the database, whether it came from an API (with the query, the date and the kind of key, never the key) or from a file, and its number of records; then the records identified, the duplicates removed by key, the unique records, and what happened to the abstracts (taken from duplicates, filled per source, not found). The methods text of `--report` is written from it.
+
 ### Screening (`--screen`)
 
 Filling in `screening_decision` does not change the analysis by itself. After screening, `--screen` writes a new file with only the records you kept, and the analysis runs on that file:
@@ -495,19 +525,71 @@ python3 Jurumim_Revisor.py --screen Nyssomyia_all.txt Nyssomyia_all_prisma.xlsx
 
 python3 Jurumim_Revisor.py --screen Nyssomyia_all.txt Nyssomyia_all_prisma.xlsx --keep include maybe --screen-out Nyssomyia_final.txt
 
+# mark only what goes out; keep the included and the records left unmarked
+python3 Jurumim_Revisor.py --screen Nyssomyia_all.txt Nyssomyia_all_prisma.xlsx --keep include unmarked
+
 python3 Jurumim_Revisor.py Nyssomyia_all_screened.txt general.xlsx --viewer
 ```
 
 | Option | Meaning |
 |---|---|
 | `--screen MERGED.txt PRISMA.xlsx` | Merged file and its PRISMA table |
-| `--keep include [maybe] [exclude]` | Decisions kept (default `include`) |
+| `--keep include [maybe] [unmarked] [exclude]` | Decisions kept (default `include`); `unmarked` keeps the records with no decision |
 | `--screen-out OUT.txt` | Output (default `<MERGED>_screened.txt`) |
 
 - Records are matched by `record_id`, the `PMID-` line of the merged file, whatever their database. Kept records are copied unchanged. The merged file is never modified, so the counts before screening remain available.
-- Records without a decision are left out and counted in a warning. Decisions are read without regard to case or surrounding spaces (` Include ` is `include`); any other value (`excl`) is reported and treated as not screened.
+- Records without a decision are left out and counted in a warning, unless `--keep` includes `unmarked`. With thousands of records it is often quicker to mark only the ones to exclude and keep the rest: `--keep include unmarked`. The PRISMA table still counts those records as not yet screened; to report them as included, fill `include` in the empty cells (in Excel: filter `screening_decision` on blanks, type `include` in the first cell and copy it down). Decisions are read without regard to case or surrounding spaces (` Include ` is `include`); any other value (`excl`) is reported and treated as not screened.
 - A warning is also printed when the table has `record_id`s that are not in the merged file, which happens with the table of another merge.
 - Records without abstract are read from `<MERGED>_no_abstract.txt`. They come marked `exclude`; a record you change to `include` is copied to the screened file too, counted by its title, and a note says so.
+
+### Screening suggestions (`--suggest`, `--import-suggestions`)
+
+Two ways to pre-sort the records before screening. Both write to their own columns of the `records` sheet and never to `screening_decision` or `exclusion_reason`. Running either one again replaces its columns. The PRISMA table must be closed in Excel while they run.
+
+#### Criteria (`--suggest`)
+
+Default criteria, valid for any topic:
+
+| Record | Suggestion |
+|---|---|
+| no abstract | exclude |
+| document type erratum, correction, retraction, retracted publication, editorial, comment, letter, news, note, biography, obituary, interview, meeting abstract, book review, conference review | exclude |
+| document type review or meta-analysis | maybe |
+| language other than English | maybe |
+
+Document types are read from `PT` (PubMed), `DT` (Web of Science) and `Document Type` (Scopus). Your own criteria are added with flags or a criteria file:
+
+```bash
+python3 Jurumim_Revisor.py --suggest Nyssomyia_all.txt Nyssomyia_all_prisma.xlsx
+python3 Jurumim_Revisor.py --suggest Nyssomyia_all.txt Nyssomyia_all_prisma.xlsx --include-terms Nyssomyia Lutzomyia --exclude-terms "in vitro" --years 2000-2026
+
+python3 Jurumim_Revisor.py --criteria-template criteria.txt     # empty criteria file, to fill in
+python3 Jurumim_Revisor.py --suggest Nyssomyia_all.txt Nyssomyia_all_prisma.xlsx --criteria criteria.txt
+```
+
+| Criteria file line | Meaning |
+|---|---|
+| `include: term, term` | At least one term must be in the title or abstract, otherwise exclude |
+| `exclude: term, term` | Any of these terms gives exclude |
+| `years: 2000-2026` | Publication years kept (`2000-` or `-2026` for one bound) |
+| `exclude types: type, type` | Document types excluded besides the default ones |
+| `keep types: letter, note` | Default excluded types that should not be excluded |
+| `languages: English, Portuguese` | Languages kept without "maybe" |
+
+Terms are matched as in `--ws`: whole words, case and hyphen variants ignored. Flags are added to the file's values. A record with an exclusion reason gets `exclude`; otherwise one with a "maybe" reason gets `maybe`; otherwise one with an inclusion term gets `include`; the rest get no suggestion. Columns: `rules_suggestion`, `rules_reason` (every reason found) and `rules_score` (inclusion terms found, or minus the number of exclusion reasons).
+
+#### AI assistant (`--import-suggestions`)
+
+A CSV written by Claude or Gemini with the [jurumim-review skill](#ai-assistant---context-and-the-jurumim-review-skill), with the columns `record_id`, `suggestion` (include / exclude / maybe), `reason`, `evidence` (a quote of the title or abstract) and `model`:
+
+```bash
+python3 Jurumim_Revisor.py --import-suggestions ai_suggestions.csv Nyssomyia_all_prisma.xlsx
+python3 Jurumim_Revisor.py --import-suggestions ai_suggestions.csv Nyssomyia_all_prisma.xlsx --ai-model "model name"
+```
+
+They go to `ai_suggestion`, `ai_reason`, `ai_evidence` and `ai_model` (`--ai-model` when the CSV has no `model` column). The CSV may use `,` or `;` (as Excel saves it in Portuguese). Rows with another suggestion, without `record_id`, or with a `record_id` that is not in the table are reported and skipped.
+
+The methods text of `--report` says how many records had suggestions from criteria and from a language model, and that every decision was made by the reviewers.
 
 ### WoS fields in MEDLINE
 
@@ -521,6 +603,88 @@ Scopus appends the publisher's copyright notice to the abstract (`© 2024 Elsevi
 
 ---
 
+## Report (`--report`)
+
+Added to any analysis run, after the tables:
+
+```bash
+python3 Jurumim_Revisor.py Nyssomyia_all.txt general.xlsx --report
+python3 Jurumim_Revisor.py Nyssomyia_all.txt general.xlsx --lemma --report --report-pt --net-min 5
+```
+
+It writes `<input>_report/` next to the output table:
+
+| File | Content |
+|---|---|
+| `network.html` | Interactive word co-occurrence network, a single file that opens in any browser |
+| `network.xlsx` | Its words (`nodes`: frequency, articles, degree, strength, community) and links (`links`: co-occurrences, times in each order, articles) |
+| `network.graphml` | The same network for Cytoscape or Gephi |
+| `trends.xlsx`, `trends.png` | Articles per year, and articles with each term per year: count, share of the year's articles, share over 3-year windows |
+| `prisma_flow.png`, `prisma_flow.svg` | PRISMA 2020 flow diagram (when the input comes from a merge) |
+| `methods_en.txt` (`methods_pt.txt` with `--report-pt`) | Methods text |
+
+### Network
+
+Titles and abstracts are split into words as in the frequency table (same stopwords, `-sw` and `--lemma`). For every word, the word right before it and the word right after it are counted. Stopwords, generic words of scientific writing (*study*, *results*, *using*, *however*, reporting verbs such as *suggest*, *performed*, *obtained*...), headings of structured abstracts and tokens that are not words leave a gap, so two words count as a pair only when they are written side by side. Pairs seen at least `--net-min` times (default 3) are kept, then the `--net-max-nodes` most frequent words (default 300). Communities are found with the Louvain method (fixed seed, so the same input gives the same groups).
+
+The layout places each community on its own island; islands with more links between them are closer, and none overlaps. In the page, the size of a word is its frequency and the width of a link its number of co-occurrences; colours are communities (eight colours, the rest grey), and links inside a community take its colour. From afar, each island shows its two most frequent words; zooming in shows the words themselves, as many as fit without overlapping. Pointing at a word shows its name and its links; clicking it moves the view to it, shows only its name with its neighbours highlighted, and lists beside the drawing the words next to it (in the order they are usually written, with the count) and its most recent articles (record ID, year, title). Clicking a group in the legend zooms into it. The page opens with a minimum number of co-occurrences that keeps about 600 links at most; the slider goes down to the value of the run (`--net-min`). The mouse wheel zooms, dragging moves the view, and Esc goes back to the whole network. `--net-keep-generic` keeps the generic words.
+
+### Trends
+
+The terms followed are the `--ws` terms or the `-st` groups when the analysis uses them; otherwise the eight words found in most articles among those present in at most half of them (the words of the search itself are in nearly every article); without `--lemma`, a singular and its plural count as one choice. The chart shows articles per year, then one panel per term with its share of the articles of a 3-year window (the year, the one before and the one after), left out when the window has fewer than 5 articles. The panels start in the first year from which every window has at least 15 articles (fewer for small searches), so the sparse early years do not draw loose fragments; the footnote gives that year. The tables have the values per year.
+
+### PRISMA 2020 flow diagram
+
+Identification (records per database, duplicates removed) and title/abstract screening (screened, excluded without abstract and by the reviewers, included, maybe, not yet screened) come from `<merged>_prisma.xlsx` and `<merged>_search_log.json`, found next to the input (`<merged>.txt`, `<merged>_screened.txt` and `<merged>_filled.txt` all lead to them). Retrieval, full-text assessment and inclusion happen outside the tool: those boxes show `n = …`, to be completed in the SVG, whose text stays editable.
+
+### Methods text
+
+Paragraphs on the search (databases, queries, dates and kind of key for API searches; files for exports), duplicate removal with its counts by key, abstracts taken from duplicates and filled per source, records excluded without abstract, screening counts and suggestions, and the text analysis and network. What the tool cannot know, such as the query and date of an exported file, is left in `[brackets]`.
+
+## AI assistant (`--context` and the jurumim-review skill)
+
+`--context` writes the report plus `<input>_report/context/`, plain-text files for an AI assistant to read:
+
+```bash
+python3 Jurumim_Revisor.py Nyssomyia_all.txt general.xlsx --lemma --context
+```
+
+| File | Content |
+|---|---|
+| `README.md` | What the folder holds and the rules for the assistant |
+| `overview.md` | Search, PRISMA counts, analysis options, most frequent words, network communities, strongest links, trends |
+| `records.csv` | One row per record: IDs, year, first author, title, journal, document type, language, databases, screening and suggestion columns of the PRISMA table |
+| `abstracts.md` | Title and abstract of every record, under `## [record_id]` |
+| `network_terms.csv`, `network_links.csv` | Words and links of the network, with up to 25 record IDs each |
+| `trends.csv` | Articles with each followed term per year |
+| `methods_en.txt` | Methods text |
+| `suggestions_template.csv` | Records without a screening decision, with the columns of `--import-suggestions` |
+
+The folder has at most nine files, all plain text, so they can also be uploaded to a chat.
+
+The `skills/jurumim-review/` folder is a skill, a set of instructions in the `SKILL.md` format read by Claude and Gemini. It works at two moments:
+
+- Before a run, it asks for the topic, the databases, the queries (and can draft them for each database), the screening criteria and the report options, checks the Python packages and which keys are saved (`--show-keys`), and builds the commands. Where the assistant can run commands (Claude Code, Gemini CLI, Antigravity CLI), it runs them with `--no-prompt` and `--outdir results/<topic>`. Keys are never asked for in the chat: the researcher saves them with `--set-keys` in a terminal.
+- After a run, it reads the context folder, answers questions citing record IDs as `[record_id]`, describes communities, frequent expressions and trends as patterns of words, and suggests screening decisions as a CSV for `--import-suggestions`, after confirming the criteria with the researcher.
+
+The assistant suggests and the researcher decides: the skill never writes `screening_decision`.
+
+The repository is also a Claude Code plugin, a Gemini CLI extension and an Antigravity plugin, which install the tool and the skill together:
+
+| Assistant | Install |
+|---|---|
+| Claude Code | `claude plugin marketplace add MCamposDA/Jurumim-Revisor`, then `claude plugin install jurumim-revisor@jurumim` |
+| Gemini CLI | `gemini extensions install https://github.com/MCamposDA/Jurumim-Revisor` |
+| Antigravity CLI | `agy plugin install https://github.com/MCamposDA/Jurumim-Revisor` |
+| claude.ai | Zip the `skills/jurumim-review` folder and upload it in the Skills settings; add the files of `context/` to a project |
+| Gemini app (Gem) | Paste the Gem instructions of `skills/jurumim-review/references/web.md` in a new Gem and add the files of `context/` as its knowledge |
+
+Each person runs these commands once on their own computer; they install the plugin for that person only. The GitHub repository is the marketplace: anyone can install from it with the same commands, without creating anything.
+
+From a local copy: `claude plugin marketplace add /path/to/Jurumim-Revisor`, `gemini extensions link /path/to/Jurumim-Revisor` or `agy plugin install /path/to/Jurumim-Revisor`, where `/path/to/Jurumim-Revisor` is the folder of that copy (the desktop app shows it filled in). In claude.ai and the Gemini app the assistant cannot run commands: it gives them to be pasted in a terminal and works on the uploaded context files.
+
+---
+
 ## Desktop app
 
 ```bash
@@ -529,18 +693,20 @@ python3 initialize.py --check      # only check what is installed
 python3 initialize.py --shortcut   # add it to the applications menu (Linux; on WSL also the Windows Start menu)
 ```
 
-The window builds and runs `Jurumim_Revisor.py` commands. Each page is a form; below it is the terminal command it will run, with a Copy button, and Run executes that command and shows its output in the log. Anything done in the window can be repeated in a terminal, and `Jurumim_Revisor.py` does not need the window.
+The window runs `Jurumim_Revisor.py` for you. Each page is one step of the review, written in plain language; the button at the bottom says what it will do (Search, Merge, Keep chosen articles, Analyse…) and its progress appears below it. *Show terminal commands* (bottom right) shows the exact command of the page, with a Copy button, and the option name next to each field, so any step can be repeated in a terminal. `Jurumim_Revisor.py` does not need the window.
 
-| Page | Runs | Controls |
+| Page | Runs | What is on it |
 |---|---|---|
-| 1 Search databases | `-p -q … --db …` | query; PubMed (e-mail, NCBI key), Web of Science (key, Expanded/Starter, own query), Scopus (key, institutional/personal, view, token, own query); fill abstracts; keep records without abstract; save keys |
-| 2 Merge files | `--merge … --merge-out …` | exported files and their detected format (PubMed, WoS plain text / tab-delimited, Scopus CSV / RIS, merged); "Add this topic's downloads"; output name; abstract options |
-| 3 Screen | `--screen MERGED PRISMA --keep …` | the topic's PRISMA flow read from its `_prisma.xlsx` (identified per database, duplicates, screened, excluded without abstract or by you, included, not yet screened); Open PRISMA table; decisions to keep |
-| 4 Analyse | `input.txt output.xlsx …` | every word, synonym groups (`term: synonym, synonym`, one per line) or search terms (one per line); stopwords and stopword file; `--lemma`, `--articles`, `--viewer` |
-| Fill abstracts of a file | `--fill-abstracts FILE` | file, output name, e-mail |
+| 1 Search databases | `-p -q … --db …` | search words; PubMed (e-mail, NCBI key), Web of Science (key, institutional or free, other words), Scopus (key, institutional or personal, detail, token, other words); look for missing abstracts; keep articles without abstract; remember the keys |
+| 2 Merge files | `--merge … --merge-out …` | exported files and the format each one was recognised as; *Add the downloads of step 1*; name of the result; abstract options |
+| 3 Screen | `--screen …` or `--suggest …` | the PRISMA flow of the topic (identified per database, duplicates, screened, excluded without abstract or by you, included, not yet screened) and, below it, how many suggestions from rules and from an AI assistant the table holds; *Open the PRISMA table*; keep the articles chosen (include, maybe, not marked, exclude), or get suggestions first (words the article must mention, words that exclude it, years, rules file, *Create a rules file…*) |
+| 4 Analyse | `input.txt output.xlsx …` | articles and table name; every word, groups of synonyms or only some terms; words to ignore; singular and plural together, one folder per article, viewer; report (methods also in Portuguese, network settings); *Open the network*, *Open the report folder* |
+| AI assistant | `… --context` or `--import-suggestions …` | everything about AI in one place: 1, choose the assistant (Claude Code, Gemini CLI or Antigravity, or claude.ai and the Gemini app) and how to install it, with the commands to copy, *Create the skill file (zip)* and *Copy the Gem instructions*; 2, using the assistant before the search, with an example request; 3, *Prepare the files* for the assistant from the articles of step 4, with an example request; 4, *Load the suggestions* written by the assistant |
+| Fill abstracts of a file | `--fill-abstracts FILE` | file, name of the result, e-mail |
 | API keys | saves `~/.jurumim_keys.json` | saved keys (masked), Semantic Scholar and OpenAlex keys, Forget all saved keys |
+| Help | nothing | how a review works in the window, keys, articles without abstract, suggestions, reading the report, words used, the terminal |
 
-- The TOPIC box at the top names the review. Every run writes into `results/<topic>/`, or into the folder picked with *Choose folder…*. After a run, steps 3 and 4 point at the newest merged, PRISMA and screened files of that folder, and a *Next* button goes to the following step.
+- The TOPIC box at the top names the review. Every run writes into `results/<topic>/`, or into the folder picked with *Choose folder…*. After a run, steps 3 and 4 point at the newest merged, PRISMA and screened files of that folder, and a *Next* button goes to the following step (after a report, *Open the network*). *Create a rules file…* writes `screening_criteria.txt` into the topic folder and opens it; an `ai_suggestions.csv` in the topic folder is picked up by the AI assistant page, and *Create the skill file (zip)* saves `jurumim-review.zip` there.
 - Keys typed in the window are passed to the tool as environment variables (`WOS_API_KEY`, `SCOPUS_API_KEY`, ...), so they never appear in the command box or in the process list. Keys saved by the terminal tool are used as well. The window keeps its own settings (topic, query, options, but no keys) in `~/.jurumim_gui.json`.
 - Stop ends the running command and anything it started, such as the viewer.
 - The viewer opens in the browser by itself. Streamlit asks for an e-mail the first time it runs; the window has no terminal to answer, so it starts Streamlit in headless mode, which skips the question.
@@ -563,11 +729,19 @@ Every source goes through the same path: its own format, then a dict of fields, 
 
 `databases/resumos.py` fills in missing abstracts. `preencher` takes the records without `AB` and asks each source only for those still missing: `_pubmed` by PMID in batches of 200, `_crossref` by DOI in batches of 50, `_semantic_scholar` in batches of 500 and `_openalex` in batches of 50, rebuilding OpenAlex's word-position index into text. A batch refused because of one malformed DOI is split until that DOI is isolated. Every text goes through `limpar` (JATS, headings, HTML entities, copyright) and `so_ingles` (the language check described above). A source that fails, from the network or a quota, is reported and the next one runs with what was found so far.
 
-`databases/credenciais.py` fills each missing e-mail or key from the flag, the environment, the saved file or a hidden question (`completar`), writes `~/.jurumim_keys.json` readable by its owner only (`salvar`) and shows keys as `abcd…wxyz` (`mascarar`).
+`databases/credenciais.py` fills each missing e-mail or key from the flag, the environment, the saved file or a hidden question (`completar`), writes `~/.jurumim_keys.json` readable by its owner only (`salvar`), shows keys as `abcd…wxyz` (`mascarar`), and asks for and saves keys without a search (`definir`, `--set-keys`).
 
-`gui/comandos.py` has one function per page of the desktop app (`comando_busca`, `comando_merge`, `comando_triagem`, `comando_analise`, `comando_preencher`). Each turns the form into the command line, the API keys as environment variables, and the problems that block the run; `texto_comando` writes the command as it would be typed. `arquivos_do_topico` finds the newest files of a topic folder and `resumo_prisma` reads the PRISMA counts. `gui/app.py` is the Tkinter window: it rebuilds the command on every change, runs `Jurumim_Revisor.py` with the same Python in its own process group, shows its output through a thread and a queue, and ends the whole group on Stop. `initialize.py` checks Python, Tkinter, the display and the fonts before opening the window.
+`databases/registro.py` writes `<merged>_search_log.json`. `origem_api` and `origem_arquivo` describe each source (database, query, date and kind of key, or file name) before duplicates are removed; `escrever_log` adds the counts of the merge.
 
-In `Jurumim_Revisor.py`, these features are in `carregar_arquivo` (recognises PubMed, WoS and Scopus files), `combinar` (duplicates, abstracts taken from duplicates, `--fill-abstracts`, the `_no_abstract.txt` file, MEDLINE and PRISMA outputs), `baixar_varias` (`-p --db`), `preencher_resumos` and `modo_preencher` (`--fill-abstracts`), `modo_merge` (fixed priority, then file name), `modo_screen` (`--screen`), `preparar_outdir` (`--outdir`), and `colunas_por_base` / `rodar_modo`, which run the same counting mode on each database's records to add the `articles_<database>` columns.
+`databases/sugestoes.py` holds the screening suggestions. `ler_criterios` reads the criteria file and flags; `avaliar` gives one record its suggestion, reasons and score from its `TI`, `AB`, `PT`, `LA` and `DP` lines; `sugerir` runs it on the merged file and its `_no_abstract.txt`; `importar_ia` reads the AI CSV (`,` or `;`, detected) and checks each row; `gravar_colunas` writes either set of columns into the `records` sheet with openpyxl, adding them after the last column and keeping formulas, drop-down list and frozen header.
+
+`reporting/` holds `--report` and `--context`. `artigos.py` reads the analysed file once (ID, year, title, abstract, journal, databases, DOI, type, language). `rede.py` turns each title and abstract into a sequence of words with gaps (`sequencia`), counts words and adjacent pairs with the records that contain them (`contar`), keeps the pairs above the minimum and finds the communities (`montar`), lays out each connected group with a force-directed layout and places the small groups beside the main one (`posicoes`), and writes the tables and GraphML (`tabelas`). `rede_html.py` writes the network page: the data as JSON inside one HTML file with its own drawing code (SVG), with no external library. `tendencias.py` chooses the terms and builds the tables and small-multiple chart. `prisma_figura.py` draws the diagram with matplotlib. `metodos.py` writes the methods text in English or Portuguese from the search log, the PRISMA counts and the analysis options. `contexto.py` writes the context folder. `relatorio.py` runs them in order and finds the PRISMA table and search log of the input.
+
+`skills/jurumim-review/` is the skill (`SKILL.md`, with `references/running.md` for planning and running, `references/context.md` for reading a context folder and writing suggestions, and `references/web.md` for claude.ai and Gems). `.claude-plugin/` (plugin and marketplace), `gemini-extension.json` with `GEMINI.md`, and `.antigravity-plugin/` describe the repository to each assistant; all three point at the same `skills/` folder.
+
+`gui/comandos.py` has one function per page of the desktop app (`comando_busca`, `comando_merge`, `comando_triagem`, `comando_sugerir`, `comando_importar_ia`, `comando_analise`, `comando_preencher`; `comando_tela_triagem` picks the screening action). Each turns the form into the command line, the API keys as environment variables, and the problems that block the run; `texto_comando` writes the command as it would be typed. `arquivos_do_topico` finds the newest files of a topic folder and `resumo_prisma` reads the PRISMA counts. `gui/app.py` is the Tkinter window: it rebuilds the command on every change, runs `Jurumim_Revisor.py` with the same Python in its own process group, shows its output through a thread and a queue, and ends the whole group on Stop. `initialize.py` checks Python, Tkinter, the display and the fonts before opening the window.
+
+In `Jurumim_Revisor.py`, these features are in `carregar_arquivo` (recognises PubMed, WoS and Scopus files), `combinar` (duplicates, abstracts taken from duplicates, `--fill-abstracts`, the `_no_abstract.txt` file, MEDLINE and PRISMA outputs), `baixar_varias` (`-p --db`), `preencher_resumos` and `modo_preencher` (`--fill-abstracts`), `modo_merge` (fixed priority, then file name), `modo_screen` (`--screen`), `modo_sugerir` and `modo_importar_ia` (`--suggest`, `--import-suggestions`), `gerar_relatorio` (`--report`, `--context`), `preparar_outdir` (`--outdir`), and `colunas_por_base` / `rodar_modo`, which run the same counting mode on each database's records to add the `articles_<database>` columns.
 
 ---
 
@@ -578,6 +752,8 @@ In `Jurumim_Revisor.py`, these features are in `carregar_arquivo` (recognises Pu
 - The same person can appear under two spellings in PubMed ("Galati, Eunice A Bianchi" and "Galati, Eunice Aparecida Bianchi"). They are counted as different authors.
 - Without `--lemma`, singular and plural are separate words.
 - Counts can change slightly between NLTK versions for unusual punctuation. For a review, write down the versions you used (`pip freeze`).
+- The network and the trends count words in titles and abstracts. A link between two words says they are written side by side, not what the studies found.
+- Suggestions from criteria only see words, document types, languages and years; suggestions of an AI assistant can be wrong. Both are there to be checked.
 
 ---
 
@@ -585,14 +761,19 @@ In `Jurumim_Revisor.py`, these features are in `carregar_arquivo` (recognises Pu
 
 | Path | Purpose |
 |---|---|
-| `Jurumim_Revisor.py` | Everything you run: parsing, counting, PubMed download, `--viewer`, `--db`, `--merge`, `--screen` |
+| `Jurumim_Revisor.py` | Everything you run: parsing, counting, PubMed download, `--viewer`, `--db`, `--merge`, `--screen`, `--suggest`, `--report` |
 | `databases/medline.py` | Record shared by all databases, MEDLINE reader and writer |
 | `databases/wos.py` | Web of Science files and APIs → MEDLINE |
 | `databases/scopus.py` | Scopus files and API → MEDLINE |
 | `databases/dedup.py` | Duplicate removal across databases |
 | `databases/prisma.py` | PRISMA table (`_prisma.xlsx`) |
 | `databases/resumos.py` | `--fill-abstracts`: missing abstracts from PubMed, Crossref, Semantic Scholar, OpenAlex |
-| `databases/credenciais.py` | E-mail and API keys: flags, environment, saved file, terminal questions |
+| `databases/credenciais.py` | E-mail and API keys: flags, environment, saved file, terminal questions, `--set-keys` |
+| `databases/registro.py` | Search log of a merge (`_search_log.json`) |
+| `databases/sugestoes.py` | `--suggest` and `--import-suggestions` |
+| `reporting/` | `--report` and `--context`: network, network page, trends, PRISMA diagram, methods text, context folder |
+| `skills/jurumim-review/` | Skill for Claude and Gemini |
+| `.claude-plugin/`, `gemini-extension.json`, `GEMINI.md`, `.antigravity-plugin/` | Plugin and extension manifests for Claude Code, Gemini CLI and Antigravity CLI |
 | `initialize.py` | Opens the desktop app (`--check`, `--shortcut`) |
 | `gui/comandos.py` | Desktop app: form state → `Jurumim_Revisor.py` command line |
 | `gui/app.py` | Desktop app window (Tkinter) |

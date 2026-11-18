@@ -1,0 +1,14 @@
+{
+  "name": "jurumim",
+  "owner": {
+    "name": "MCamposDA",
+    "url": "https://github.com/MCamposDA"
+  },
+  "plugins": [
+    {
+      "name": "jurumim-revisor",
+      "source": "./",
+      "description": "Jurumim Revisor and its jurumim-review skill: search, merge, screen and read the results of a literature review."
+    }
+  ]
+}
